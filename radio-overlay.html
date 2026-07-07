@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Radio Now Playing Overlay</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: transparent;
+    width: 1920px;
+    height: 1080px;
+    overflow: hidden;
+    font-family: Helvetica, Arial, sans-serif;
+  }
+
+  /* Debug log — ENABLED. Change display to 'none' to hide. */
+  #debug {
+    display: block;
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    width: 1200px;
+    max-height: 560px;
+    overflow-y: auto;
+    background: rgba(0,0,0,0.92);
+    color: #0f0;
+    font-family: monospace;
+    font-size: 13px;
+    padding: 14px 18px;
+    border: 1px solid #0f0;
+    border-radius: 6px;
+    line-height: 1.6;
+    z-index: 999;
+    word-break: break-all;
+  }
+  #debug-title { color: #ff0; font-size: 13px; margin-bottom: 8px;
+                 border-bottom: 1px solid #333; padding-bottom: 6px; }
+  .log-ok    { color: #4cdd6a; }
+  .log-fail  { color: #ff4444; }
+  .log-wait  { color: #aaaaaa; }
+  .log-retry { color: #ffaa00; }
+  .log-data  { color: #66aaff; font-size: 11px; margin-top: 2px; }
+
+  /* ════════════════════════════════════════════
+     LOWER-LEFT: ARTWORK + METADATA SIDE BY SIDE
+  ════════════════════════════════════════════ */
+  #lower-left {
+    position: absolute;
+    bottom: 64px;
+    left: 64px;
+    display: flex;
+    flex-direction: row;
+    align-items: flex-end;
+    gap: 28px;
+  }
+
+  #artwork-block {
+    width: 400px;
+    height: 400px;
+    flex-shrink: 0;
+    background: #111;
+    position: relative;
+    transition: opacity 0.6s ease;
+  }
+  #artwork-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: none;
+    position: relative;
+    z-index: 1;
+  }
+  #artwork-placeholder {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #artwork-placeholder svg { opacity: 0.2; }
+
+  #metadata-block {
+    flex: 1;
+    max-width: 900px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    padding-bottom: 4px;
+    padding-right: 12px;
+    transition: opacity 0.6s ease;
+  }
+
+  .meta-inner {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    overflow: visible;
+  }
+
+  .meta-shadow {
+    text-shadow:
+      2px  2px  0px rgba(0,0,0,0.95),
+     -1px -1px  0px rgba(0,0,0,0.95),
+      1px -1px  0px rgba(0,0,0,0.95),
+     -1px  1px  0px rgba(0,0,0,0.95),
+      0px  4px  8px rgba(0,0,0,0.9),
+      0px  8px 20px rgba(0,0,0,0.8),
+      0px 12px 32px rgba(0,0,0,0.6);
+    overflow: visible;
+    padding-right: 4px;
+  }
+
+  /* Line 1: track_title — bold, upright, white */
+  #meta-song {
+    font-size: 44px;
+    font-weight: 700;
+    font-style: normal;
+    color: #ffffff;
+    line-height: 1.15;
+    white-space: nowrap;
+    overflow: visible;
+  }
+
+  /* Line 2: artist + optional concert */
+  #meta-artist-row {
+    display: flex;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 20px;
+    overflow: visible;
+  }
+  #meta-artist {
+    font-size: 44px;
+    font-weight: 400;
+    font-style: normal;
+    color: #ffffff;
+    line-height: 1.15;
+    white-space: nowrap;
+    overflow: visible;
+  }
+  /* Concert info — yellow */
+  #meta-concert {
+    font-size: 44px;
+    font-weight: 400;
+    font-style: normal;
+    color: #ffe033;
+    line-height: 1.15;
+    white-space: nowrap;
+    overflow: visible;
+    display: none;
+  }
+
+  /* Line 3: album + optional release date */
+  #meta-album-row {
+    display: none;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 20px;
+    overflow: visible;
+  }
+  /* Album title — italic, white */
+  #meta-album {
+    font-size: 44px;
+    font-weight: 400;
+    font-style: italic;
+    color: #ffffff;
+    line-height: 1.15;
+    white-space: nowrap;
+    overflow: visible;
+  }
+  /* Release date — upright, green */
+  #meta-release {
+    font-size: 44px;
+    font-weight: 400;
+    font-style: normal;
+    color: #4cdd6a;
+    line-height: 1.15;
+    white-space: nowrap;
+    overflow: visible;
+    display: none;
+  }
+</style>
+</head>
+<body>
+
+<div id="debug">
+  <div id="debug-title">RADIO OVERLAY — DIAGNOSTIC LOG (newest first)</div>
+  <div id="debug-log"></div>
+</div>
+
+<div id="lower-left">
+  <div id="artwork-block">
+    <div id="artwork-placeholder">
+      <svg width="80" height="80" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg">
+        <path d="M9 18V5l12-2v13M9 18c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-2c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z"/>
+      </svg>
+    </div>
+    <img id="artwork-img" alt="Album Art" />
+  </div>
+
+  <div id="metadata-block">
+    <div class="meta-inner">
+      <div id="meta-song" class="meta-shadow"></div>
+      <div id="meta-artist-row" class="meta-shadow">
+        <span id="meta-artist"></span>
+        <span id="meta-concert"></span>
+      </div>
+      <div id="meta-album-row" class="meta-shadow">
+        <span id="meta-album"></span>
+        <span id="meta-release"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  var STATION_ID       = 's115121de1';
+  var POLL_INTERVAL_MS = 12000;
+  var STATUS_URL       = 'https://public.radio.co/stations/' + STATION_ID + '/status';
+  var TRACK_V2_URL     = 'https://public.radio.co/api/v2/' + STATION_ID + '/track/current';
+
+  // Google Sheets published as CSV — serves with CORS headers,
+  // works from file:// in Safari and from localhost in OBS.
+  var ALBUMS_CSV_URL   = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQOWhnzYjSHDGH9_sVF6NiKduAUhAFkEYtWn4FOId6DmU5dIhzbXaQUNQv_toFhuJrGchvkPbhVWkM-/pub?gid=0&single=true&output=csv';
+  var CONCERTS_CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSuuWfJqxFUDSDlqFKVrW4cyariFSECCAwZ-qTrDm8lDP20mi1Ulr_VJ3pw35ZbUYnMuHtLZWSClEm8/pub?gid=0&single=true&output=csv';
+
+  var V2_MATCH_RETRIES  = 4;
+  var V2_RETRY_DELAY_MS = 4000;
+  var FADE_DURATION_MS  = 600;
+
+  var pendingTitle     = null;
+  var confirmedTitle   = null;
+  var v2RetryTimer     = null;
+  var isVisible        = false;
+  var upcomingAlbums   = [];
+  var upcomingConcerts = [];
+
+  var debugLog       = document.getElementById('debug-log');
+  var metaSong       = document.getElementById('meta-song');
+  var metaArtistRow  = document.getElementById('meta-artist-row');
+  var metaArtist     = document.getElementById('meta-artist');
+  var metaConcert    = document.getElementById('meta-concert');
+  var metaAlbumRow   = document.getElementById('meta-album-row');
+  var metaAlbum      = document.getElementById('meta-album');
+  var metaRelease    = document.getElementById('meta-release');
+  var artImg         = document.getElementById('artwork-img');
+  var artPlaceholder = document.getElementById('artwork-placeholder');
+  var artworkBlock   = document.getElementById('artwork-block');
+  var metadataBlock  = document.getElementById('metadata-block');
+
+  artworkBlock.style.opacity  = '0';
+  metadataBlock.style.opacity = '0';
+
+  // ── LOGGING ─────────────────────────────────────────────
+  function log(message, cssClass, dataStr) {
+    var time = new Date().toLocaleTimeString();
+    var el   = document.createElement('div');
+    el.style.cssText = 'border-bottom:1px solid #1a1a1a;padding-bottom:3px;margin-bottom:3px;';
+    el.innerHTML =
+      '<span style="color:#555">[' + time + ']</span> ' +
+      '<span class="' + (cssClass || '') + '">' + message + '</span>' +
+      (dataStr ? '<div class="log-data">' + dataStr + '</div>' : '');
+    debugLog.insertBefore(el, debugLog.firstChild);
+    while (debugLog.children.length > 60) debugLog.removeChild(debugLog.lastChild);
+  }
+
+  // ── CSV PARSER ───────────────────────────────────────────
+  // Handles quoted fields containing commas.
+  function parseCSVRow(row) {
+    var cols = [];
+    var current = '';
+    var inQuotes = false;
+    for (var i = 0; i < row.length; i++) {
+      var ch = row[i];
+      if (ch === '"') {
+        inQuotes = !inQuotes;
+      } else if (ch === ',' && !inQuotes) {
+        cols.push(current.trim());
+        current = '';
+      } else {
+        current += ch;
+      }
+    }
+    cols.push(current.trim());
+    return cols;
+  }
+
+  // Expand 2-digit year: 7/28/26 -> 7/28/2026
+  function expandDate(dateStr) {
+    var m = dateStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/);
+    if (m) return m[1] + '/' + m[2] + '/20' + m[3];
+    return dateStr;
+  }
+
+  // ── LOAD UPCOMING ALBUMS ─────────────────────────────────
+  // Google Sheet columns: Release Date, Artist, Album
+  function loadUpcomingAlbums() {
+    return fetch(ALBUMS_CSV_URL, { cache: 'no-store' })
+      .then(function(res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.text();
+      })
+      .then(function(text) {
+        var rows   = text.trim().split('\n');
+        var parsed = [];
+        for (var i = 0; i < rows.length; i++) {
+          var cols = parseCSVRow(rows[i]);
+          if (cols.length < 3) continue;
+          var releaseDate = new Date(expandDate(cols[0]));
+          if (isNaN(releaseDate.getTime())) continue; // skip header
+          parsed.push({ releaseDate: releaseDate, artist: cols[1], album: cols[2] });
+        }
+        upcomingAlbums = parsed;
+        log('📀 Loaded ' + parsed.length + ' upcoming album(s) from Google Sheets', 'log-ok');
+      })
+      .catch(function(err) {
+        log('⚠️ Albums sheet failed: ' + err.message, 'log-wait');
+      });
+  }
+
+  // ── LOAD UPCOMING CONCERTS ───────────────────────────────
+  // Google Sheet columns: Artist, Date, City, State, Venue, ...
+  function loadUpcomingConcerts() {
+    return fetch(CONCERTS_CSV_URL, { cache: 'no-store' })
+      .then(function(res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.text();
+      })
+      .then(function(text) {
+        var rows   = text.trim().split('\n');
+        var parsed = [];
+        for (var i = 0; i < rows.length; i++) {
+          var cols = parseCSVRow(rows[i]);
+          if (cols.length < 5) continue;
+          var concertDate = new Date(expandDate(cols[1]));
+          if (isNaN(concertDate.getTime())) continue; // skip header
+          parsed.push({
+            artist:      cols[0],
+            concertDate: concertDate,
+            city:        cols[2],
+            state:       cols[3],
+            venue:       cols[4]
+          });
+        }
+        upcomingConcerts = parsed;
+        log('🎤 Loaded ' + parsed.length + ' upcoming concert(s) from Google Sheets', 'log-ok');
+      })
+      .catch(function(err) {
+        log('⚠️ Concerts sheet failed: ' + err.message, 'log-wait');
+      });
+  }
+
+  // ── LOOKUP: UPCOMING ALBUM RELEASE ──────────────────────
+  function checkUpcomingAlbum(artist, album) {
+    var today = new Date();
+    today.setHours(0, 0, 0, 0);
+    for (var i = 0; i < upcomingAlbums.length; i++) {
+      var row = upcomingAlbums[i];
+      if (row.artist.toLowerCase() === artist.toLowerCase() &&
+          row.album.toLowerCase()  === album.toLowerCase()  &&
+          row.releaseDate > today) {
+        return 'out ' + row.releaseDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      }
+    }
+    return null;
+  }
+
+  // ── LOOKUP: SOONEST UPCOMING CONCERT ────────────────────
+  function checkUpcomingConcert(artist) {
+    var today = new Date();
+    today.setHours(0, 0, 0, 0);
+    var matches = [];
+    for (var i = 0; i < upcomingConcerts.length; i++) {
+      var row = upcomingConcerts[i];
+      if (row.artist.toLowerCase() === artist.toLowerCase() &&
+          row.concertDate >= today) {
+        matches.push(row);
+      }
+    }
+    if (!matches.length) return null;
+    matches.sort(function(a, b) { return a.concertDate - b.concertDate; });
+    var next    = matches[0];
+    var dateStr = next.concertDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    return dateStr + ' @ ' + next.venue + ' - ' + next.city + ', ' + next.state;
+  }
+
+  // ── TRANSITIONS ──────────────────────────────────────────
+  function fadeOut() {
+    return new Promise(function(resolve) {
+      if (!isVisible) { resolve(); return; }
+      artworkBlock.style.opacity  = '0';
+      metadataBlock.style.opacity = '0';
+      isVisible = false;
+      log('⬇️ Fading out', 'log-wait');
+      setTimeout(resolve, FADE_DURATION_MS);
+    });
+  }
+
+  function fadeIn(artist, trackTitle, album, artworkUrl, releaseLabel, concertLabel) {
+    metaSong.textContent   = trackTitle;
+    metaArtist.textContent = artist;
+
+    if (concertLabel) {
+      metaConcert.textContent   = concertLabel;
+      metaConcert.style.display = 'inline';
+    } else {
+      metaConcert.textContent   = '';
+      metaConcert.style.display = 'none';
+    }
+
+    if (album) {
+      metaAlbum.textContent      = album;
+      metaAlbumRow.style.display = 'flex';
+      if (releaseLabel) {
+        metaRelease.textContent    = releaseLabel;
+        metaRelease.style.display  = 'inline';
+      } else {
+        metaRelease.textContent   = '';
+        metaRelease.style.display = 'none';
+      }
+    } else {
+      metaAlbum.textContent      = '';
+      metaRelease.textContent    = '';
+      metaRelease.style.display  = 'none';
+      metaAlbumRow.style.display = 'none';
+    }
+
+    if (artworkUrl) {
+      var tmp    = new Image();
+      tmp.onload = function() {
+        artImg.src                   = artworkUrl;
+        artPlaceholder.style.display = 'none';
+        artImg.style.display         = 'block';
+        artworkBlock.style.opacity   = '1';
+        metadataBlock.style.opacity  = '1';
+        isVisible = true;
+        log('✅ Faded in: ' + artist + ' — ' + trackTitle, 'log-ok');
+      };
+      tmp.onerror = function() {
+        artImg.style.display         = 'none';
+        artPlaceholder.style.display = 'flex';
+        artworkBlock.style.opacity   = '1';
+        metadataBlock.style.opacity  = '1';
+        isVisible = true;
+        log('❌ Artwork failed, text only: ' + artworkUrl, 'log-fail');
+      };
+      tmp.src = artworkUrl;
+    } else {
+      artImg.style.display         = 'none';
+      artPlaceholder.style.display = 'flex';
+      artworkBlock.style.opacity   = '1';
+      metadataBlock.style.opacity  = '1';
+      isVisible = true;
+    }
+  }
+
+  // ── APPLY VERIFIED METADATA ──────────────────────────────
+  function applyMetadata(t) {
+    var artist     = t.track_artist || '';
+    var trackTitle = t.track_title  || '';
+    var album      = t.track_album  || '';
+    var artworkUrl = (t.artwork_urls && (t.artwork_urls.large || t.artwork_urls.standard)) || '';
+    var release    = album  ? checkUpcomingAlbum(artist, album) : null;
+    var concert    = artist ? checkUpcomingConcert(artist)      : null;
+
+    log('✅ Verified: ' + artist + ' / ' + trackTitle + ' / ' + album, 'log-ok');
+
+    // ── CONCERT LOOKUP DIAGNOSTIC ────────────────────────
+    if (!artist) {
+      log('  🎤 Concert check: no artist name available', 'log-wait');
+    } else {
+      var today = new Date(); today.setHours(0,0,0,0);
+      var allForArtist = upcomingConcerts.filter(function(r) {
+        return r.artist.toLowerCase() === artist.toLowerCase();
+      });
+      var futureForArtist = allForArtist.filter(function(r) {
+        return r.concertDate >= today;
+      });
+      if (allForArtist.length === 0) {
+        log('  🎤 Concert: no entries for "' + artist + '"', 'log-wait');
+      } else if (futureForArtist.length === 0) {
+        log('  🎤 Concert: ' + allForArtist.length + ' entry/entries for "' + artist + '" but all past', 'log-wait');
+      } else {
+        log('  🎤 Concert: ' + futureForArtist.length + ' upcoming → ' + concert, 'log-ok');
+      }
+    }
+
+    // ── ALBUM LOOKUP DIAGNOSTIC ──────────────────────────
+    if (!album) {
+      log('  📀 Album check: no album title in metadata', 'log-wait');
+    } else {
+      var today2 = new Date(); today2.setHours(0,0,0,0);
+      var allForAlbum = upcomingAlbums.filter(function(r) {
+        return r.artist.toLowerCase() === artist.toLowerCase() &&
+               r.album.toLowerCase()  === album.toLowerCase();
+      });
+      var futureForAlbum = allForAlbum.filter(function(r) {
+        return r.releaseDate > today2;
+      });
+      if (allForAlbum.length === 0) {
+        log('  📀 Album: "' + album + '" by "' + artist + '" not in list', 'log-wait');
+      } else if (futureForAlbum.length === 0) {
+        log('  📀 Album: "' + album + '" found but release date has passed', 'log-wait');
+      } else {
+        log('  📀 Album: match found → ' + release, 'log-ok');
+      }
+    }
+
+    fadeIn(artist, trackTitle, album, artworkUrl, release, concert);
+  }
+
+  // ── V2 FETCH WITH TITLE VERIFICATION ────────────────────
+  function fetchAndVerifyV2(expectedRawTitle, attempt) {
+    if (v2RetryTimer) { clearTimeout(v2RetryTimer); v2RetryTimer = null; }
+
+    fetch(TRACK_V2_URL, { cache: 'no-store' })
+      .then(function(res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+      })
+      .then(function(json) {
+        if (expectedRawTitle !== confirmedTitle) {
+          log('⚠️ Track changed during retry — aborting', 'log-wait');
+          return;
+        }
+        var t       = json.data;
+        var v2Title = (t && t.title) || '';
+
+        log('v2: "' + v2Title + '" | expected: "' + expectedRawTitle + '"',
+            v2Title === expectedRawTitle ? 'log-ok' : 'log-retry');
+
+        if (v2Title === expectedRawTitle) {
+          applyMetadata(t);
+        } else if (attempt < V2_MATCH_RETRIES) {
+          log('↩️ Mismatch (attempt ' + attempt + '/' + V2_MATCH_RETRIES + ') — retry in ' + (V2_RETRY_DELAY_MS/1000) + 's', 'log-retry');
+          v2RetryTimer = setTimeout(function() {
+            fetchAndVerifyV2(expectedRawTitle, attempt + 1);
+          }, V2_RETRY_DELAY_MS);
+        } else {
+          log('⚠️ Still mismatched after ' + V2_MATCH_RETRIES + ' attempts — best available', 'log-fail');
+          applyMetadata(t);
+        }
+      })
+      .catch(function(err) {
+        log('❌ v2 fetch failed: ' + err.message, 'log-fail');
+      });
+  }
+
+  // ── POLL ─────────────────────────────────────────────────
+  function fetchNowPlaying() {
+    fetch(STATUS_URL, { cache: 'no-store' })
+      .then(function(res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+      })
+      .then(function(data) {
+        var track = data.current_track;
+        if (!track) { log('⚠️ No current_track', 'log-fail'); return; }
+
+        var rawTitle = track.title || '';
+
+        if (rawTitle === pendingTitle) {
+          if (rawTitle !== confirmedTitle) {
+            confirmedTitle = rawTitle;
+            log('⏳ Confirmed: ' + rawTitle, 'log-wait');
+            fadeOut().then(function() {
+              fetchAndVerifyV2(rawTitle, 1);
+            });
+          }
+        } else {
+          if (rawTitle !== confirmedTitle && isVisible) {
+            log('⬇️ New title — fading out stale metadata', 'log-wait');
+            fadeOut();
+          }
+          pendingTitle = rawTitle;
+          log('⏳ Holding: ' + rawTitle, 'log-wait');
+        }
+      })
+      .catch(function(err) {
+        log('❌ Poll failed: ' + err.message, 'log-fail');
+      });
+  }
+
+  // ── INIT ─────────────────────────────────────────────────
+  Promise.all([loadUpcomingAlbums(), loadUpcomingConcerts()]).then(function() {
+    fetchNowPlaying();
+    setInterval(fetchNowPlaying, POLL_INTERVAL_MS);
+  });
+</script>
+</body>
+</html>
