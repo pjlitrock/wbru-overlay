@@ -357,8 +357,10 @@
     today.setHours(0, 0, 0, 0);
     for (var i = 0; i < upcomingAlbums.length; i++) {
       var row = upcomingAlbums[i];
-      if (row.artist.toLowerCase() === artist.toLowerCase() &&
-          row.album.toLowerCase()  === album.toLowerCase()  &&
+      var artistMatch = row.artist.toLowerCase() === artist.toLowerCase() ||
+                        row.artist.toLowerCase() === 'various artists';
+      if (artistMatch &&
+          row.album.toLowerCase() === album.toLowerCase() &&
           row.releaseDate > today) {
         return 'out ' + row.releaseDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
       }
@@ -492,8 +494,9 @@
     } else {
       var today2 = new Date(); today2.setHours(0,0,0,0);
       var allForAlbum = upcomingAlbums.filter(function(r) {
-        return r.artist.toLowerCase() === artist.toLowerCase() &&
-               r.album.toLowerCase()  === album.toLowerCase();
+        var artistMatch = r.artist.toLowerCase() === artist.toLowerCase() ||
+                          r.artist.toLowerCase() === 'various artists';
+        return artistMatch && r.album.toLowerCase() === album.toLowerCase();
       });
       var futureForAlbum = allForAlbum.filter(function(r) {
         return r.releaseDate > today2;
