@@ -535,7 +535,11 @@
     fadeIn(artist, trackTitle, album, artworkUrl, release, concert);
   }
 
-  // ── V2 FETCH WITH TITLE VERIFICATION ────────────────────
+  // ── V2 FETCH WITH TITLE + ARTIST VERIFICATION ──────────
+  // radio.co sometimes drifts track_album and artwork_urls to the
+  // next track mid-song while track_title still matches. We catch
+  // this by also verifying that track_artist appears in the expected
+  // raw title string. If either check fails we retry.
   function fetchAndVerifyV2(expectedRawTitle, attempt) {
     if (v2RetryTimer) { clearTimeout(v2RetryTimer); v2RetryTimer = null; }
 
@@ -549,13 +553,23 @@
           log('⚠️ Track changed during retry — aborting', 'log-wait');
           return;
         }
-        var t       = json.data;
-        var v2Title = (t && t.title) || '';
+        var t          = json.data;
+        var v2Title    = (t && t.title)        || '';
+        var v2Artist   = (t && t.track_artist) || '';
 
-        log('v2: "' + v2Title + '" | expected: "' + expectedRawTitle + '"',
-            v2Title === expectedRawTitle ? 'log-ok' : 'log-retry');
+        // Check 1: combined title must match
+        var titleMatch  = (v2Title === expectedRawTitle);
+        // Check 2: artist must appear in the expected raw title
+        // (guards against album/artwork drifting to next track mid-song)
+        var artistMatch = v2Artist &&
+                          expectedRawTitle.toLowerCase().indexOf(v2Artist.toLowerCase()) !== -1;
+        var fullMatch   = titleMatch && artistMatch;
 
-        if (v2Title === expectedRawTitle) {
+        log('v2: "' + v2Title + '" artist: "' + v2Artist + '" | expected: "' + expectedRawTitle + '" | ' +
+            (fullMatch ? 'OK' : 'MISMATCH title=' + titleMatch + ' artist=' + artistMatch),
+            fullMatch ? 'log-ok' : 'log-retry');
+
+        if (fullMatch) {
           applyMetadata(t);
         } else if (attempt < V2_MATCH_RETRIES) {
           log('↩️ Mismatch (attempt ' + attempt + '/' + V2_MATCH_RETRIES + ') — retry in ' + (V2_RETRY_DELAY_MS/1000) + 's', 'log-retry');
@@ -563,7 +577,7 @@
             fetchAndVerifyV2(expectedRawTitle, attempt + 1);
           }, V2_RETRY_DELAY_MS);
         } else {
-          log('⚠️ Still mismatched after ' + V2_MATCH_RETRIES + ' attempts — best available', 'log-fail');
+          log('⚠️ Still mismatched after ' + V2_MATCH_RETRIES + ' attempts — displaying best available', 'log-fail');
           applyMetadata(t);
         }
       })
