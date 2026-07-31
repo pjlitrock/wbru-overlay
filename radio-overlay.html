@@ -583,10 +583,17 @@
         var titleMatch  = (v2Title === expectedRawTitle);
         var artistMatch = v2Artist &&
                           expectedRawTitle.toLowerCase().indexOf(v2Artist.toLowerCase()) !== -1;
-        var fullMatch   = titleMatch && artistMatch;
 
-        log('v2: "' + v2Title + '" artist: "' + v2Artist + '" | ' +
-            (fullMatch ? '✓ clean' : 'DRIFT DETECTED title=' + titleMatch + ' artist=' + artistMatch),
+        // Duration check: if v2 reports a track shorter than 30 seconds,
+        // it has almost certainly jumped ahead to a station ID or jingle.
+        // track_duration is in milliseconds.
+        var duration       = (t && t.track_duration) || 999999;
+        var durationOk     = duration >= 30000;
+
+        var fullMatch   = titleMatch && artistMatch && durationOk;
+
+        log('v2: "' + v2Title + '" artist: "' + v2Artist + '" duration: ' + Math.round(duration/1000) + 's | ' +
+            (fullMatch ? '✓ clean' : 'DRIFT DETECTED title=' + titleMatch + ' artist=' + artistMatch + ' duration=' + durationOk),
             fullMatch ? 'log-ok' : 'log-retry');
 
         if (fullMatch) {
@@ -598,17 +605,17 @@
             artworkUrl: (t.artwork_urls && (t.artwork_urls.large || t.artwork_urls.standard)) || ''
           });
           applyMetadata(t);
-        } else if (titleMatch && !artistMatch) {
-          // Title matches but artist has drifted — v2 album/artwork are wrong.
+        } else if (titleMatch && (!artistMatch || !durationOk)) {
+          // Title matches but artist or duration signals drift —
+          // v2 album/artwork have crept ahead to the next item.
           // Retrying won't help. Recover using cache or show partial info.
           var cached = metadataCache[expectedRawTitle];
           if (cached) {
             log('↩️ Drift recovered from cache: ' + expectedRawTitle, 'log-ok');
             applyMetadataFromCache(cached);
           } else {
-            // No cache — parse artist/title from raw status title,
-            // display without album or artwork rather than show wrong ones
-            log('⚠️ Drift with no cache — showing title/artist only, no album/artwork', 'log-wait');
+            // No cache — show artist/title only, no album or artwork
+            log('⚠️ Drift with no cache — showing title/artist only', 'log-wait');
             applyMetadataPartial(expectedRawTitle, t);
           }
         } else if (attempt < V2_MATCH_RETRIES) {
