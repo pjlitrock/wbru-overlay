@@ -236,6 +236,15 @@
   var upcomingAlbums   = [];
   var upcomingConcerts = [];
 
+  // Cache of cleanly verified track metadata keyed by rawTitle.
+  // Stores only short strings (artist, title, album, artwork URL) —
+  // not image data — so memory growth is negligible even over long sessions.
+  var metadataCache = {};
+
+  function cacheSet(rawTitle, data) {
+    metadataCache[rawTitle] = data;
+  }
+
   var debugLog       = document.getElementById('debug-log');
   var metaSong       = document.getElementById('meta-song');
   var metaArtistRow  = document.getElementById('meta-artist-row');
@@ -482,6 +491,14 @@
     var release    = album  ? checkUpcomingAlbum(artist, album) : null;
     var concert    = artist ? checkUpcomingConcert(artist)      : null;
 
+    // Cache this clean result so drift recovery can use it later
+    if (confirmedTitle) {
+      cacheSet(confirmedTitle, {
+        artist: artist, trackTitle: trackTitle,
+        album: album, artworkUrl: artworkUrl
+      });
+    }
+
     log('✅ Verified: ' + artist + ' / ' + trackTitle + ' / ' + album, 'log-ok');
 
     // ── CONCERT LOOKUP DIAGNOSTIC ────────────────────────
@@ -535,11 +552,17 @@
     fadeIn(artist, trackTitle, album, artworkUrl, release, concert);
   }
 
-  // ── V2 FETCH WITH TITLE + ARTIST VERIFICATION ──────────
-  // radio.co sometimes drifts track_album and artwork_urls to the
-  // next track mid-song while track_title still matches. We catch
-  // this by also verifying that track_artist appears in the expected
-  // raw title string. If either check fails we retry.
+  // ── V2 FETCH WITH DRIFT DETECTION & RECOVERY ───────────
+  // radio.co sometimes updates track_album and artwork_urls to the
+  // next track mid-song. We detect this by checking that track_artist
+  // from v2 appears in the expected raw title. If it doesn't, v2 has
+  // drifted. Rather than retrying (which won't help — v2 will keep
+  // returning next-track data until the song ends), we recover by:
+  //   1. Using the correct artist/title from v2 (these stay accurate)
+  //   2. Looking up cached album/artwork from the last clean display
+  //      of this same track, if we've seen it before
+  //   3. If no cache hit, showing artist/title only with no album or
+  //      artwork — wrong info is worse than no info
   function fetchAndVerifyV2(expectedRawTitle, attempt) {
     if (v2RetryTimer) { clearTimeout(v2RetryTimer); v2RetryTimer = null; }
 
@@ -553,37 +576,81 @@
           log('⚠️ Track changed during retry — aborting', 'log-wait');
           return;
         }
-        var t          = json.data;
-        var v2Title    = (t && t.title)        || '';
-        var v2Artist   = (t && t.track_artist) || '';
+        var t        = json.data;
+        var v2Title  = (t && t.title)        || '';
+        var v2Artist = (t && t.track_artist) || '';
 
-        // Check 1: combined title must match
         var titleMatch  = (v2Title === expectedRawTitle);
-        // Check 2: artist must appear in the expected raw title
-        // (guards against album/artwork drifting to next track mid-song)
         var artistMatch = v2Artist &&
                           expectedRawTitle.toLowerCase().indexOf(v2Artist.toLowerCase()) !== -1;
         var fullMatch   = titleMatch && artistMatch;
 
-        log('v2: "' + v2Title + '" artist: "' + v2Artist + '" | expected: "' + expectedRawTitle + '" | ' +
-            (fullMatch ? 'OK' : 'MISMATCH title=' + titleMatch + ' artist=' + artistMatch),
+        log('v2: "' + v2Title + '" artist: "' + v2Artist + '" | ' +
+            (fullMatch ? '✓ clean' : 'DRIFT DETECTED title=' + titleMatch + ' artist=' + artistMatch),
             fullMatch ? 'log-ok' : 'log-retry');
 
         if (fullMatch) {
+          // Clean data — cache it and display
+          cacheSet(expectedRawTitle, {
+            artist:     t.track_artist || '',
+            trackTitle: t.track_title  || '',
+            album:      t.track_album  || '',
+            artworkUrl: (t.artwork_urls && (t.artwork_urls.large || t.artwork_urls.standard)) || ''
+          });
           applyMetadata(t);
+        } else if (titleMatch && !artistMatch) {
+          // Title matches but artist has drifted — v2 album/artwork are wrong.
+          // Retrying won't help. Recover using cache or show partial info.
+          var cached = metadataCache[expectedRawTitle];
+          if (cached) {
+            log('↩️ Drift recovered from cache: ' + expectedRawTitle, 'log-ok');
+            applyMetadataFromCache(cached);
+          } else {
+            // No cache — parse artist/title from raw status title,
+            // display without album or artwork rather than show wrong ones
+            log('⚠️ Drift with no cache — showing title/artist only, no album/artwork', 'log-wait');
+            applyMetadataPartial(expectedRawTitle, t);
+          }
         } else if (attempt < V2_MATCH_RETRIES) {
-          log('↩️ Mismatch (attempt ' + attempt + '/' + V2_MATCH_RETRIES + ') — retry in ' + (V2_RETRY_DELAY_MS/1000) + 's', 'log-retry');
+          // Title itself doesn't match yet — v2 may just be behind. Retry.
+          log('↩️ Title mismatch (attempt ' + attempt + '/' + V2_MATCH_RETRIES + ') — retry in ' + (V2_RETRY_DELAY_MS/1000) + 's', 'log-retry');
           v2RetryTimer = setTimeout(function() {
             fetchAndVerifyV2(expectedRawTitle, attempt + 1);
           }, V2_RETRY_DELAY_MS);
         } else {
-          log('⚠️ Still mismatched after ' + V2_MATCH_RETRIES + ' attempts — displaying best available', 'log-fail');
+          log('⚠️ Still mismatched after ' + V2_MATCH_RETRIES + ' attempts — best available', 'log-fail');
           applyMetadata(t);
         }
       })
       .catch(function(err) {
         log('❌ v2 fetch failed: ' + err.message, 'log-fail');
       });
+  }
+
+  // Display using cleanly cached metadata
+  function applyMetadataFromCache(cached) {
+    var release = cached.album ? checkUpcomingAlbum(cached.artist, cached.album) : null;
+    var concert = cached.artist ? checkUpcomingConcert(cached.artist) : null;
+    log('✅ Displaying from cache: ' + cached.artist + ' / ' + cached.trackTitle + ' / ' + cached.album, 'log-ok');
+    fadeIn(cached.artist, cached.trackTitle, cached.album, cached.artworkUrl, release, concert);
+  }
+
+  // Display with artist/title only — no album or artwork
+  // Used when v2 has drifted and we have no cached clean data
+  function applyMetadataPartial(rawTitle, t) {
+    // Use v2's track_artist if it matches, else parse from raw title
+    var artist     = '';
+    var trackTitle = '';
+    var idx = rawTitle.indexOf(' - ');
+    if (idx !== -1) {
+      artist     = rawTitle.slice(0, idx).trim();
+      trackTitle = rawTitle.slice(idx + 3).trim();
+    } else {
+      trackTitle = rawTitle;
+    }
+    var concert = artist ? checkUpcomingConcert(artist) : null;
+    log('⚠️ Partial display (no album/artwork): ' + artist + ' / ' + trackTitle, 'log-wait');
+    fadeIn(artist, trackTitle, '', '', null, concert);
   }
 
   // ── POLL ─────────────────────────────────────────────────
