@@ -16,7 +16,7 @@
 
   /* Debug log — ENABLED. Change display to 'none' to hide. */
   #debug {
-    display: none;
+    display: block;
     position: absolute;
     top: 20px;
     left: 20px;
@@ -302,7 +302,7 @@
         return res.text();
       })
       .then(function(text) {
-        var rows   = text.trim().split('\n');
+        var rows   = text.trim().replace(/\r/g, '').split('\n');
         var parsed = [];
         for (var i = 0; i < rows.length; i++) {
           var cols = parseCSVRow(rows[i]);
@@ -328,7 +328,7 @@
         return res.text();
       })
       .then(function(text) {
-        var rows   = text.trim().split('\n');
+        var rows   = text.trim().replace(/\r/g, '').split('\n');
         var parsed = [];
         for (var i = 0; i < rows.length; i++) {
           var cols = parseCSVRow(rows[i]);
@@ -368,7 +368,18 @@
     return null;
   }
 
-  // ── LOOKUP: SOONEST UPCOMING CONCERT ────────────────────
+  // ── LOOKUP: NEAREST UPCOMING CONCERT ───────────────────
+  // Sorts by proximity to Providence first (RI > MA > CT > other),
+  // then by date within each tier. This ensures a later RI show
+  // always displays before an earlier CT show.
+  function statePriority(state) {
+    var s = (state || '').trim().toUpperCase();
+    if (s === 'RI') return 0;
+    if (s === 'MA') return 1;
+    if (s === 'CT') return 2;
+    return 3;
+  }
+
   function checkUpcomingConcert(artist) {
     var today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -381,7 +392,12 @@
       }
     }
     if (!matches.length) return null;
-    matches.sort(function(a, b) { return a.concertDate - b.concertDate; });
+    matches.sort(function(a, b) {
+      var pa = statePriority(a.state);
+      var pb = statePriority(b.state);
+      if (pa !== pb) return pa - pb;            // closer state first
+      return a.concertDate - b.concertDate;     // earlier date within same state
+    });
     var next    = matches[0];
     var dateStr = next.concertDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
     return dateStr + ' @ ' + next.venue + ' - ' + next.city + ', ' + next.state;
@@ -484,7 +500,13 @@
       } else if (futureForArtist.length === 0) {
         log('  🎤 Concert: ' + allForArtist.length + ' entry/entries for "' + artist + '" but all past', 'log-wait');
       } else {
-        log('  🎤 Concert: ' + futureForArtist.length + ' upcoming → ' + concert, 'log-ok');
+        // Show which concert won and all candidates for transparency
+        var candidates = futureForArtist.map(function(r) {
+          return r.concertDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                 + ' ' + r.city + ', ' + r.state;
+        }).join(' | ');
+        log('  🎤 Concert: ' + futureForArtist.length + ' upcoming → displaying: ' + concert, 'log-ok');
+        log('  🎤 All candidates: ' + candidates, 'log-wait');
       }
     }
 
