@@ -14,9 +14,9 @@
     font-family: Helvetica, Arial, sans-serif;
   }
 
-  /* Debug log — ENABLED 'block'. Change display to 'none' to hide. */
+  /* Debug log — ENABLED. Change display to 'none' to hide. */
   #debug {
-    display: none;
+    display: block;
     position: absolute;
     top: 20px;
     left: 20px;
@@ -297,9 +297,12 @@
 
   // Expand 2-digit year: 7/28/26 -> 7/28/2026
   function expandDate(dateStr) {
-    var m = dateStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/);
-    if (m) return m[1] + '/' + m[2] + '/20' + m[3];
-    return dateStr;
+    var s = (dateStr || '').trim();
+    // M/D/YY -> M/D/20YY
+    var m2 = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/);
+    if (m2) return m2[1] + '/' + m2[2] + '/20' + m2[3];
+    // M/D/YYYY already fine — pass through
+    return s;
   }
 
   // ── LOAD UPCOMING ALBUMS ─────────────────────────────────
@@ -342,8 +345,13 @@
         for (var i = 0; i < rows.length; i++) {
           var cols = parseCSVRow(rows[i]);
           if (cols.length < 5) continue;
-          var concertDate = new Date(expandDate(cols[1]));
-          if (isNaN(concertDate.getTime())) continue; // skip header
+          var rawDate     = cols[1];
+          var concertDate = new Date(expandDate(rawDate));
+          if (isNaN(concertDate.getTime())) {
+            // Log rows with digits that failed to parse (not just header)
+            if (rawDate.match(/\d/)) log('⚠️ Concert date parse failed: "' + rawDate + '" in: ' + rows[i].slice(0,60), 'log-wait');
+            continue;
+          }
           parsed.push({
             artist:      cols[0],
             concertDate: concertDate,
@@ -409,7 +417,12 @@
     });
     var next    = matches[0];
     var dateStr = next.concertDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    return dateStr + ' @ ' + next.venue + ' - ' + next.city + ', ' + next.state;
+    // Omit state for RI, MA, and CT — audience knows these markets
+    var s = (next.state || '').trim().toUpperCase();
+    var location = (s === 'RI' || s === 'MA' || s === 'CT')
+      ? next.city
+      : next.city + ', ' + next.state;
+    return dateStr + ' @ ' + next.venue + ' - ' + location;
   }
 
   // ── TRANSITIONS ──────────────────────────────────────────
