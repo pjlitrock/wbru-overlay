@@ -1,0 +1,176 @@
+/* ════════════════════════════════════════════
+   OVERLAY BASE STYLES — shared by all 4 clients
+   (radio-overlay, vertical-radio-overlay,
+    360-overlay, vertical-360-overlay)
+
+   Orientation-specific sizing/positioning lives in
+   horizontal.css or vertical.css, loaded alongside
+   this file by each thin client.
+════════════════════════════════════════════ */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: transparent;
+  overflow: hidden;
+}
+
+/* ── DEBUG LOG ────────────────────────────────
+   Hidden by default. Each thin client's
+   OVERLAY_CONFIG.debug flag toggles this via JS.
+════════════════════════════════════════════ */
+#debug {
+  display: none;
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  max-height: 700px;
+  overflow-y: auto;
+  background: rgba(0,0,0,0.92);
+  color: #0f0;
+  font-family: monospace;
+  font-size: 13px;
+  padding: 14px 18px;
+  border: 1px solid #0f0;
+  border-radius: 6px;
+  line-height: 1.6;
+  z-index: 999;
+  word-break: break-all;
+}
+#debug-title {
+  color: #ff0;
+  font-size: 13px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid #333;
+  padding-bottom: 6px;
+}
+.log-ok    { color: #4cdd6a; }
+.log-fail  { color: #ff4444; }
+.log-wait  { color: #aaaaaa; }
+.log-retry { color: #ffaa00; }
+.log-data  { color: #66aaff; font-size: 11px; margin-top: 2px; }
+
+/* ════════════════════════════════════════════
+   LOWER-LEFT: ARTWORK + METADATA
+   Same DOM/IDs for every orientation. Horizontal
+   lays these out as a row; vertical as a column
+   (see horizontal.css / vertical.css). CSS `order`
+   on #artwork-block / #metadata-block lets the
+   visual order flip per orientation without any
+   change to the HTML markup.
+════════════════════════════════════════════ */
+#lower-block {
+  position: absolute;
+  bottom: 64px;
+  left: 64px;
+  display: flex;
+}
+
+#artwork-block {
+  width: 400px;
+  height: 400px;
+  flex-shrink: 0;
+  background: #111;
+  position: relative;
+  transition: opacity 0.6s ease;
+}
+#artwork-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: none;
+  position: relative;
+  z-index: 1;
+}
+#artwork-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#artwork-placeholder svg { opacity: 0.2; }
+
+#metadata-block {
+  transition: opacity 0.6s ease;
+}
+
+.meta-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: visible;
+}
+
+.meta-shadow {
+  text-shadow:
+    2px  2px  0px rgba(0,0,0,0.95),
+   -1px -1px  0px rgba(0,0,0,0.95),
+    1px -1px  0px rgba(0,0,0,0.95),
+   -1px  1px  0px rgba(0,0,0,0.95),
+    0px  4px  8px rgba(0,0,0,0.9),
+    0px  8px 20px rgba(0,0,0,0.8),
+    0px 12px 32px rgba(0,0,0,0.6);
+  overflow: visible;
+  padding-right: 4px;
+}
+
+/* Row wrappers — JS toggles display:flex/none on
+   these, and display:inline/none on the optional
+   spans inside. flex-direction is set per
+   orientation (row for horizontal, column for
+   vertical) so the same markup + JS produces
+   "side by side" on the horizontal overlay and
+   "stacked lines" on the vertical overlay. */
+#meta-artist-row {
+  display: flex;
+  align-items: baseline;
+  overflow: visible;
+}
+#meta-album-row {
+  display: none; /* shown via JS (display:flex) when album is present */
+  align-items: baseline;
+  overflow: visible;
+}
+
+/* Line 1: track_title — bold, upright, white */
+#meta-song {
+  font-weight: 700;
+  font-style: normal;
+  color: #ffffff;
+  overflow: visible;
+}
+
+/* Line 2: track_artist — normal weight, upright, white */
+#meta-artist {
+  font-weight: 400;
+  font-style: normal;
+  color: #ffffff;
+  overflow: visible;
+}
+
+/* Concert info — yellow, optional */
+#meta-concert {
+  font-weight: 400;
+  font-style: normal;
+  color: #ffe033;
+  overflow: visible;
+  display: none;
+}
+
+/* Album title — italic, white */
+#meta-album {
+  font-weight: 400;
+  font-style: italic;
+  color: #ffffff;
+  overflow: visible;
+}
+
+/* Release date — upright, green, optional */
+#meta-release {
+  font-weight: 400;
+  font-style: normal;
+  color: #4cdd6a;
+  overflow: visible;
+  display: none;
+}

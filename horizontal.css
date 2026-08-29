@@ -1,0 +1,50 @@
+/* ════════════════════════════════════════════
+   HORIZONTAL OVERLAY (1920×1080)
+   Used by: radio-overlay.html, 360-overlay.html
+   Load after overlay-base.css.
+════════════════════════════════════════════ */
+
+body {
+  width: 1920px;
+  height: 1080px;
+  font-family: Helvetica, Arial, sans-serif;
+}
+
+#debug {
+  width: 1200px;
+  max-height: 560px;
+}
+
+/* Artwork left, metadata right, bottom-aligned, side by side */
+#lower-block {
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 28px;
+}
+
+#metadata-block {
+  flex: 1;
+  max-width: 900px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding-bottom: 4px;
+  padding-right: 12px;
+}
+
+/* Artist+concert and album+release sit side by side on one line */
+#meta-artist-row,
+#meta-album-row {
+  flex-direction: row;
+  gap: 20px;
+}
+
+#meta-song,
+#meta-artist,
+#meta-concert,
+#meta-album,
+#meta-release {
+  font-size: 44px;
+  line-height: 1.15;
+  white-space: nowrap;
+}

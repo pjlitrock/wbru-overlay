@@ -1,0 +1,55 @@
+/* ════════════════════════════════════════════
+   VERTICAL OVERLAY (1080×1920)
+   Used by: vertical-radio-overlay.html, vertical-360-overlay.html
+   Load after overlay-base.css.
+════════════════════════════════════════════ */
+
+body {
+  width: 1080px;
+  height: 1920px;
+  font-family: 'Helvetica Condensed', 'Helvetica Neue Condensed', 'Arial Narrow',
+               'Nimbus Sans Narrow', sans-serif;
+}
+
+#debug {
+  width: 1040px;
+  max-height: 700px;
+}
+
+/* Metadata stacked above artwork, left-aligned, same width as artwork */
+#lower-block {
+  flex-direction: column;
+  align-items: flex-start;
+  width: 400px;
+  gap: 16px;
+}
+
+/* Visual order: metadata first, artwork below —
+   flips the horizontal layout's DOM order via CSS only */
+#metadata-block { order: 1; width: 100%; }
+#artwork-block  { order: 2; }
+
+/* Concert stacks below artist; release stacks below album */
+#meta-artist-row,
+#meta-album-row {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+#meta-song,
+#meta-artist,
+#meta-album {
+  font-size: 52px;
+  line-height: 1.15;
+  white-space: normal;
+  word-break: break-word;
+}
+
+#meta-concert,
+#meta-release {
+  font-size: 44px;
+  line-height: 1.15;
+  white-space: normal;
+  word-break: break-word;
+}
