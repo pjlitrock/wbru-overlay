@@ -51,8 +51,6 @@
   // artwork instead of stale/wrong track info.
   var SCHEDULE_CSV_URL     = cfg.scheduleCsvUrl || null;
   var SCHEDULE_TIMEZONE    = cfg.scheduleTimezone   || 'America/New_York';
-  var STALE_BUFFER_MS      = cfg.staleBufferMs      || 30000;   // grace period past a track's own duration
-  var STALE_FALLBACK_MS    = cfg.staleFallbackMs    || 300000;  // used when duration is unknown (5 min)
   var GITHUB_REPO          = cfg.githubRepo   || null; // e.g. 'pjlitrock/wbru-overlay' — required to resolve show artwork
   var GITHUB_BRANCH        = cfg.githubBranch || 'main';
 
@@ -68,15 +66,12 @@
   var confirmedTitle   = null;
   var v2RetryTimer     = null;
   var isVisible        = false;
-  var verifying        = false; // true while a title-change is being verified via v2
   var upcomingAlbums   = [];
   var upcomingConcerts = [];
   var showSchedule     = [];
   var artworkUrlCache  = {}; // folderPath -> { url, resolvedAt } (GitHub API folder listing results)
 
   // Show-mode state
-  var trackConfirmedAt = null;  // Date.now() when current track metadata was last confirmed fresh
-  var trackDurationMs  = null;  // reported duration of that track, if known
   var displayMode      = 'none'; // 'none' | 'track' | 'show' | 'blank'
   var currentShowKey   = null;
 
@@ -447,36 +442,29 @@
       });
   }
 
-  // Checks whether currently-displayed track metadata has gone stale
-  // (unchanged for longer than the track's own duration, plus a buffer),
-  // and if so, swaps in the currently-scheduled show's name/artwork.
+  // Shows the currently-scheduled show's name/artwork whenever track
+  // metadata isn't the thing on screen — covers the hold-and-verify gap
+  // between songs, drift-recovery gaps, and genuine dead air alike.
   // No-op entirely unless scheduleCsvUrl is configured.
-  function evaluateDisplayState() {
-    if (!SCHEDULE_CSV_URL || verifying) return;
+  function fillGapIfNeeded() {
+    if (!SCHEDULE_CSV_URL) return;
 
-    var now = Date.now();
-    var isStale;
-    if (!trackConfirmedAt) {
-      isStale = true; // no fresh track metadata has ever arrived
-    } else {
-      var effectiveDuration = trackDurationMs || STALE_FALLBACK_MS;
-      isStale = (now - trackConfirmedAt) > (effectiveDuration + STALE_BUFFER_MS);
-    }
+    var trackShowing = (displayMode === 'track' && isVisible);
+    if (trackShowing) return;
 
-    var show = isStale ? getCurrentShow() : null;
-
-    if (isStale && show) {
+    var show = getCurrentShow();
+    if (show) {
       var showKey = show.day + '|' + show.startMin + '|' + show.show;
       if (displayMode !== 'show' || showKey !== currentShowKey) {
         currentShowKey = showKey;
         displayMode    = 'show';
-        log('📻 Metadata stale — showing schedule: ' + show.show, 'log-wait');
-        fadeOut().then(function() { fadeInShow(show.show, show.artworkFolder); });
+        log('📻 No song info on screen — showing schedule: ' + show.show, 'log-wait');
+        fadeInShow(show.show, show.artworkFolder);
       }
-    } else if (isStale && !show && displayMode !== 'blank' && displayMode !== 'none') {
+    } else if (displayMode !== 'blank' && displayMode !== 'none') {
       displayMode = 'blank';
       currentShowKey = null;
-      log('📻 Metadata stale and no show scheduled — fading out', 'log-wait');
+      log('📻 No song info and no show scheduled — fading out', 'log-wait');
       fadeOut();
     }
   }
@@ -494,94 +482,103 @@
   }
 
   function fadeIn(artist, trackTitle, album, artworkUrl, releaseLabel, concertLabel) {
-    displayMode      = 'track';
-    currentShowKey   = null;
-    metaArtistRow.style.display = 'flex'; // in case show mode hid it
-    metaSong.textContent   = trackTitle;
-    metaArtist.textContent = artist;
+    // Always fade out whatever's currently on screen first (track or show
+    // info) so this never looks like an abrupt jump-cut — a no-op wait if
+    // nothing is currently visible.
+    fadeOut().then(function() {
+      displayMode      = 'track';
+      currentShowKey   = null;
+      metaArtistRow.style.display = 'flex'; // in case show mode hid it
+      metaSong.textContent   = trackTitle;
+      metaArtist.textContent = artist;
 
-    if (concertLabel) {
-      metaConcert.textContent   = concertLabel;
-      metaConcert.style.display = 'inline';
-    } else {
-      metaConcert.textContent   = '';
-      metaConcert.style.display = 'none';
-    }
-
-    if (album) {
-      metaAlbum.textContent      = album;
-      metaAlbumRow.style.display = 'flex';
-      if (releaseLabel) {
-        metaRelease.textContent   = releaseLabel;
-        metaRelease.style.display = 'inline';
+      if (concertLabel) {
+        metaConcert.textContent   = concertLabel;
+        metaConcert.style.display = 'inline';
       } else {
-        metaRelease.textContent   = '';
-        metaRelease.style.display = 'none';
+        metaConcert.textContent   = '';
+        metaConcert.style.display = 'none';
       }
-    } else {
-      metaAlbum.textContent      = '';
-      metaRelease.textContent    = '';
-      metaRelease.style.display  = 'none';
-      metaAlbumRow.style.display = 'none';
-    }
 
-    if (artworkUrl) {
-      var tmp    = new Image();
-      tmp.onload = function() {
-        artImg.src                   = artworkUrl;
-        artPlaceholder.style.display = 'none';
-        artImg.style.display         = 'block';
-        artworkBlock.style.opacity   = '1';
-        metadataBlock.style.opacity  = '1';
-        isVisible = true;
-        log('✅ Faded in: ' + artist + ' — ' + trackTitle, 'log-ok');
-      };
-      tmp.onerror = function() {
+      if (album) {
+        metaAlbum.textContent      = album;
+        metaAlbumRow.style.display = 'flex';
+        if (releaseLabel) {
+          metaRelease.textContent   = releaseLabel;
+          metaRelease.style.display = 'inline';
+        } else {
+          metaRelease.textContent   = '';
+          metaRelease.style.display = 'none';
+        }
+      } else {
+        metaAlbum.textContent      = '';
+        metaRelease.textContent    = '';
+        metaRelease.style.display  = 'none';
+        metaAlbumRow.style.display = 'none';
+      }
+
+      if (artworkUrl) {
+        var tmp    = new Image();
+        tmp.onload = function() {
+          artImg.src                   = artworkUrl;
+          artPlaceholder.style.display = 'none';
+          artImg.style.display         = 'block';
+          artworkBlock.style.opacity   = '1';
+          metadataBlock.style.opacity  = '1';
+          isVisible = true;
+          log('✅ Faded in: ' + artist + ' — ' + trackTitle, 'log-ok');
+        };
+        tmp.onerror = function() {
+          artImg.style.display         = 'none';
+          artPlaceholder.style.display = 'flex';
+          artworkBlock.style.opacity   = '1';
+          metadataBlock.style.opacity  = '1';
+          isVisible = true;
+          log('❌ Artwork failed, text only: ' + artworkUrl, 'log-fail');
+        };
+        tmp.src = artworkUrl;
+      } else {
         artImg.style.display         = 'none';
         artPlaceholder.style.display = 'flex';
         artworkBlock.style.opacity   = '1';
         metadataBlock.style.opacity  = '1';
         isVisible = true;
-        log('❌ Artwork failed, text only: ' + artworkUrl, 'log-fail');
-      };
-      tmp.src = artworkUrl;
-    } else {
-      artImg.style.display         = 'none';
-      artPlaceholder.style.display = 'flex';
-      artworkBlock.style.opacity   = '1';
-      metadataBlock.style.opacity  = '1';
-      isVisible = true;
-    }
+      }
+    });
   }
 
   // Displays a scheduled show's name/artwork in place of track metadata.
   // Only the song line is used; artist/concert/album/release rows are hidden.
+  // Always fades out whatever's currently on screen first (a no-op wait if
+  // nothing is currently visible), same guarantee as fadeIn().
   function fadeInShow(showName, artworkFolder) {
-    metaSong.textContent        = showName;
-    metaArtist.textContent      = '';
-    metaArtistRow.style.display = 'none';
-    metaAlbumRow.style.display  = 'none';
+    fadeOut().then(function() {
+      metaSong.textContent        = showName;
+      metaArtist.textContent      = '';
+      metaArtistRow.style.display = 'none';
+      metaAlbumRow.style.display  = 'none';
 
-    function showPlaceholder() {
-      artImg.style.display         = 'none';
-      artPlaceholder.style.display = 'flex';
-      artworkBlock.style.opacity   = '1';
-      metadataBlock.style.opacity  = '1';
-      isVisible = true;
-      log('📻 Show mode (no artwork found): ' + showName, 'log-ok');
-    }
+      function showPlaceholder() {
+        artImg.style.display         = 'none';
+        artPlaceholder.style.display = 'flex';
+        artworkBlock.style.opacity   = '1';
+        metadataBlock.style.opacity  = '1';
+        isVisible = true;
+        log('📻 Show mode (no artwork found): ' + showName, 'log-ok');
+      }
 
-    if (!artworkFolder) { showPlaceholder(); return; }
+      if (!artworkFolder) { showPlaceholder(); return; }
 
-    resolveShowArtworkUrl(artworkFolder, function(url) {
-      artImg.src                   = url;
-      artPlaceholder.style.display = 'none';
-      artImg.style.display         = 'block';
-      artworkBlock.style.opacity   = '1';
-      metadataBlock.style.opacity  = '1';
-      isVisible = true;
-      log('📻 Show mode: ' + showName + ' (' + url + ')', 'log-ok');
-    }, showPlaceholder);
+      resolveShowArtworkUrl(artworkFolder, function(url) {
+        artImg.src                   = url;
+        artPlaceholder.style.display = 'none';
+        artImg.style.display         = 'block';
+        artworkBlock.style.opacity   = '1';
+        metadataBlock.style.opacity  = '1';
+        isVisible = true;
+        log('📻 Show mode: ' + showName + ' (' + url + ')', 'log-ok');
+      }, showPlaceholder);
+    });
   }
 
   // ── APPLY VERIFIED METADATA ──────────────────────────────
@@ -592,10 +589,6 @@
     var artworkUrl = (t.artwork_urls && (t.artwork_urls.large || t.artwork_urls.standard)) || '';
     var release    = album  ? checkUpcomingAlbum(artist, album) : null;
     var concert    = artist ? checkUpcomingConcert(artist)      : null;
-
-    verifying        = false;
-    trackConfirmedAt = Date.now();
-    trackDurationMs  = t.track_duration || null;
 
     // Cache this clean result so drift recovery can use it later
     if (confirmedTitle) {
@@ -739,16 +732,12 @@
         }
       })
       .catch(function(err) {
-        verifying = false;
         log('❌ v2 fetch failed: ' + err.message, 'log-fail');
       });
   }
 
   // Display using cleanly cached metadata
   function applyMetadataFromCache(cached) {
-    verifying        = false;
-    trackConfirmedAt = Date.now();
-    trackDurationMs  = null; // not stored in cache — falls back to STALE_FALLBACK_MS
     var release = cached.album ? checkUpcomingAlbum(cached.artist, cached.album) : null;
     var concert = cached.artist ? checkUpcomingConcert(cached.artist) : null;
     log('✅ Displaying from cache: ' + cached.artist + ' / ' + cached.trackTitle + ' / ' + cached.album, 'log-ok');
@@ -758,9 +747,6 @@
   // Display with artist/title only — no album or artwork
   // Used when v2 has drifted and we have no cached clean data
   function applyMetadataPartial(rawTitle, t) {
-    verifying        = false;
-    trackConfirmedAt = Date.now();
-    trackDurationMs  = (t && t.track_duration) || null;
     // Use v2's track_artist if it matches, else parse from raw title
     var artist     = '';
     var trackTitle = '';
@@ -792,9 +778,9 @@
         if (rawTitle === pendingTitle) {
           if (rawTitle !== confirmedTitle) {
             confirmedTitle = rawTitle;
-            verifying      = true;
             log('⏳ Confirmed: ' + rawTitle, 'log-wait');
             fadeOut().then(function() {
+              fillGapIfNeeded(); // show info fills the verification gap, if configured
               fetchAndVerifyV2(rawTitle, 1);
             });
           }
@@ -806,11 +792,11 @@
           pendingTitle = rawTitle;
           log('⏳ Holding: ' + rawTitle, 'log-wait');
         }
-        evaluateDisplayState();
+        fillGapIfNeeded();
       })
       .catch(function(err) {
         log('❌ Poll failed: ' + err.message, 'log-fail');
-        evaluateDisplayState();
+        fillGapIfNeeded();
       });
   }
 
@@ -818,7 +804,7 @@
   function init() {
     grabDom();
     Promise.all([loadUpcomingAlbums(), loadUpcomingConcerts(), loadShowSchedule()]).then(function() {
-      evaluateDisplayState();
+      fillGapIfNeeded();
       fetchNowPlaying();
       setInterval(fetchNowPlaying, POLL_INTERVAL_MS);
     });
