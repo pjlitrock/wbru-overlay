@@ -44,6 +44,18 @@
   var DEBUG              = !!cfg.debug;
   var DEBUG_TITLE        = cfg.debugTitle || 'OVERLAY — DIAGNOSTIC LOG (newest first)';
 
+  // ── SHOW-SCHEDULE / STALE-METADATA FALLBACK (optional) ──
+  // Only active when scheduleCsvUrl is set in config. When metadata
+  // hasn't refreshed in longer than the current track's duration (plus
+  // a buffer), the engine shows the currently-scheduled show's name and
+  // artwork instead of stale/wrong track info.
+  var SCHEDULE_CSV_URL     = cfg.scheduleCsvUrl || null;
+  var SCHEDULE_TIMEZONE    = cfg.scheduleTimezone   || 'America/New_York';
+  var STALE_BUFFER_MS      = cfg.staleBufferMs      || 30000;   // grace period past a track's own duration
+  var STALE_FALLBACK_MS    = cfg.staleFallbackMs    || 300000;  // used when duration is unknown (5 min)
+  var GITHUB_REPO          = cfg.githubRepo   || null; // e.g. 'pjlitrock/wbru-overlay' — required to resolve show artwork
+  var GITHUB_BRANCH        = cfg.githubBranch || 'main';
+
   if (!STATION_ID) {
     console.error('OVERLAY_CONFIG.stationId is required — set it before loading overlay-engine.js');
     return;
@@ -56,8 +68,17 @@
   var confirmedTitle   = null;
   var v2RetryTimer     = null;
   var isVisible        = false;
+  var verifying        = false; // true while a title-change is being verified via v2
   var upcomingAlbums   = [];
   var upcomingConcerts = [];
+  var showSchedule     = [];
+  var artworkUrlCache  = {}; // folderPath -> { url, resolvedAt } (GitHub API folder listing results)
+
+  // Show-mode state
+  var trackConfirmedAt = null;  // Date.now() when current track metadata was last confirmed fresh
+  var trackDurationMs  = null;  // reported duration of that track, if known
+  var displayMode      = 'none'; // 'none' | 'track' | 'show' | 'blank'
+  var currentShowKey   = null;
 
   // Cache of cleanly verified track metadata keyed by rawTitle.
   // Stores only short strings (artist, title, album, artwork URL) —
@@ -280,6 +301,186 @@
     return dateStr + ' @ ' + next.venue + ' - ' + location;
   }
 
+  // ── LOAD SHOW SCHEDULE ───────────────────────────────────
+  // Google Sheet columns: Day, Start_Time, End_Time, Show, Artwork_Link
+  // Day is a weekday name, "Daily" (matches every day), or "Default"
+  // (catch-all fallback, blank Start_Time/End_Time, always matches).
+  function loadShowSchedule() {
+    if (!SCHEDULE_CSV_URL) return Promise.resolve();
+    return fetch(SCHEDULE_CSV_URL, { cache: 'no-store' })
+      .then(function(res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.text();
+      })
+      .then(function(text) {
+        var rows   = text.trim().replace(/\r/g, '').split('\n');
+        var parsed = [];
+        for (var i = 0; i < rows.length; i++) {
+          var cols = parseCSVRow(rows[i]);
+          if (cols.length < 4) continue;
+          var day = (cols[0] || '').trim();
+          if (!day || day.toLowerCase() === 'day') continue; // skip blank/header row
+          var startStr = (cols[1] || '').trim();
+          var endStr   = (cols[2] || '').trim();
+          parsed.push({
+            day:           day,
+            startMin:      startStr ? parseTimeToMinutes(startStr) : null,
+            endMin:        endStr   ? parseTimeToMinutes(endStr)   : null,
+            show:          (cols[3] || '').trim(),
+            artworkFolder: (cols[4] || '').trim()
+          });
+        }
+        showSchedule = parsed;
+        log('📅 Loaded ' + parsed.length + ' show schedule entrie(s)', 'log-ok');
+      })
+      .catch(function(err) {
+        log('⚠️ Show schedule failed: ' + err.message, 'log-wait');
+      });
+  }
+
+  // Parses "12:00 PM" / "1:05 AM" style strings into minutes-since-midnight.
+  function parseTimeToMinutes(str) {
+    var m = str.match(/^(\d{1,2}):(\d{2})\s*([AaPp][Mm])$/);
+    if (!m) return null;
+    var h  = parseInt(m[1], 10);
+    var mi = parseInt(m[2], 10);
+    var ap = m[3].toUpperCase();
+    if (ap === 'AM') { if (h === 12) h = 0; }
+    else             { if (h !== 12) h += 12; }
+    return h * 60 + mi;
+  }
+
+  // Current weekday name + minutes-since-midnight, in the schedule's timezone
+  // (not the machine's local timezone — important since OBS may run on a
+  // machine set to a different zone than the station's market).
+  function nowInScheduleTZ() {
+    var fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: SCHEDULE_TIMEZONE, weekday: 'long',
+      hour: '2-digit', minute: '2-digit', hour12: false
+    });
+    var weekday, hour, minute;
+    fmt.formatToParts(new Date()).forEach(function(p) {
+      if (p.type === 'weekday') weekday = p.value;
+      if (p.type === 'hour')    hour    = parseInt(p.value, 10);
+      if (p.type === 'minute')  minute  = parseInt(p.value, 10);
+    });
+    if (hour === 24) hour = 0; // some browsers report midnight as 24 with hour12:false
+    return { weekday: weekday, minutes: hour * 60 + minute };
+  }
+
+  function timeInRange(nowMin, startMin, endMin) {
+    if (startMin === null || endMin === null || startMin === endMin) return false;
+    if (startMin < endMin) return nowMin >= startMin && nowMin < endMin;
+    return nowMin >= startMin || nowMin < endMin; // crosses midnight
+  }
+
+  // Returns the currently-scheduled show ({show, artworkFolder, ...}), or
+  // null if none. Priority: exact weekday match > "Daily" match > "Default".
+  function getCurrentShow() {
+    if (!showSchedule.length) return null;
+    var now = nowInScheduleTZ();
+    var exactMatch = null, dailyMatch = null, defaultRow = null;
+    for (var i = 0; i < showSchedule.length; i++) {
+      var row = showSchedule[i];
+      var d   = row.day.toLowerCase();
+      if (d === 'default') { if (!defaultRow) defaultRow = row; continue; }
+      if (timeInRange(now.minutes, row.startMin, row.endMin)) {
+        if (d === now.weekday.toLowerCase()) { if (!exactMatch) exactMatch = row; }
+        else if (d === 'daily')              { if (!dailyMatch) dailyMatch = row; }
+      }
+    }
+    return exactMatch || dailyMatch || defaultRow;
+  }
+
+  // Resolves a show's artwork folder to an actual image URL by asking
+  // GitHub's API what's in the folder — this is what lets each folder
+  // hold an image with ANY filename (no fixed "cover.jpg" convention),
+  // so the filename itself can stay meaningful (date, source, notes).
+  // Results are cached briefly per folder to avoid re-listing on every
+  // stale check while a show is airing.
+  var ARTWORK_CACHE_TTL_MS = 5 * 60 * 1000; // 5 min — long enough to avoid repeat calls per show, short enough to pick up a swap without a page reload
+
+  function resolveShowArtworkUrl(folderPath, onSuccess, onFail) {
+    if (!folderPath) { onFail(); return; }
+    if (!GITHUB_REPO) {
+      log('⚠️ No githubRepo configured — cannot resolve show artwork folder', 'log-wait');
+      onFail();
+      return;
+    }
+
+    var cached = artworkUrlCache[folderPath];
+    if (cached && (Date.now() - cached.resolvedAt) < ARTWORK_CACHE_TTL_MS) {
+      if (cached.url) onSuccess(cached.url); else onFail();
+      return;
+    }
+
+    var apiUrl = 'https://api.github.com/repos/' + GITHUB_REPO + '/contents/' +
+                 folderPath.replace(/^\/|\/$/g, '').split('/').map(encodeURIComponent).join('/') +
+                 '?ref=' + encodeURIComponent(GITHUB_BRANCH);
+
+    fetch(apiUrl, { cache: 'no-store' })
+      .then(function(res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+      })
+      .then(function(items) {
+        var images = (Array.isArray(items) ? items : [])
+          .filter(function(item) { return item.type === 'file' && /\.(jpe?g|png)$/i.test(item.name); })
+          .sort(function(a, b) { return a.name.localeCompare(b.name); });
+
+        if (!images.length) {
+          log('⚠️ No .jpg/.png/.jpeg file found in ' + folderPath, 'log-wait');
+          artworkUrlCache[folderPath] = { url: null, resolvedAt: Date.now() };
+          onFail();
+          return;
+        }
+        if (images.length > 1) {
+          log('⚠️ ' + images.length + ' image files in ' + folderPath + ' — using "' + images[0].name + '" (keep just one to avoid ambiguity)', 'log-wait');
+        }
+        var url = images[0].download_url;
+        artworkUrlCache[folderPath] = { url: url, resolvedAt: Date.now() };
+        onSuccess(url);
+      })
+      .catch(function(err) {
+        log('⚠️ Could not list ' + folderPath + ': ' + err.message, 'log-wait');
+        onFail();
+      });
+  }
+
+  // Checks whether currently-displayed track metadata has gone stale
+  // (unchanged for longer than the track's own duration, plus a buffer),
+  // and if so, swaps in the currently-scheduled show's name/artwork.
+  // No-op entirely unless scheduleCsvUrl is configured.
+  function evaluateDisplayState() {
+    if (!SCHEDULE_CSV_URL || verifying) return;
+
+    var now = Date.now();
+    var isStale;
+    if (!trackConfirmedAt) {
+      isStale = true; // no fresh track metadata has ever arrived
+    } else {
+      var effectiveDuration = trackDurationMs || STALE_FALLBACK_MS;
+      isStale = (now - trackConfirmedAt) > (effectiveDuration + STALE_BUFFER_MS);
+    }
+
+    var show = isStale ? getCurrentShow() : null;
+
+    if (isStale && show) {
+      var showKey = show.day + '|' + show.startMin + '|' + show.show;
+      if (displayMode !== 'show' || showKey !== currentShowKey) {
+        currentShowKey = showKey;
+        displayMode    = 'show';
+        log('📻 Metadata stale — showing schedule: ' + show.show, 'log-wait');
+        fadeOut().then(function() { fadeInShow(show.show, show.artworkFolder); });
+      }
+    } else if (isStale && !show && displayMode !== 'blank' && displayMode !== 'none') {
+      displayMode = 'blank';
+      currentShowKey = null;
+      log('📻 Metadata stale and no show scheduled — fading out', 'log-wait');
+      fadeOut();
+    }
+  }
+
   // ── TRANSITIONS ──────────────────────────────────────────
   function fadeOut() {
     return new Promise(function(resolve) {
@@ -293,6 +494,9 @@
   }
 
   function fadeIn(artist, trackTitle, album, artworkUrl, releaseLabel, concertLabel) {
+    displayMode      = 'track';
+    currentShowKey   = null;
+    metaArtistRow.style.display = 'flex'; // in case show mode hid it
     metaSong.textContent   = trackTitle;
     metaArtist.textContent = artist;
 
@@ -350,6 +554,36 @@
     }
   }
 
+  // Displays a scheduled show's name/artwork in place of track metadata.
+  // Only the song line is used; artist/concert/album/release rows are hidden.
+  function fadeInShow(showName, artworkFolder) {
+    metaSong.textContent        = showName;
+    metaArtist.textContent      = '';
+    metaArtistRow.style.display = 'none';
+    metaAlbumRow.style.display  = 'none';
+
+    function showPlaceholder() {
+      artImg.style.display         = 'none';
+      artPlaceholder.style.display = 'flex';
+      artworkBlock.style.opacity   = '1';
+      metadataBlock.style.opacity  = '1';
+      isVisible = true;
+      log('📻 Show mode (no artwork found): ' + showName, 'log-ok');
+    }
+
+    if (!artworkFolder) { showPlaceholder(); return; }
+
+    resolveShowArtworkUrl(artworkFolder, function(url) {
+      artImg.src                   = url;
+      artPlaceholder.style.display = 'none';
+      artImg.style.display         = 'block';
+      artworkBlock.style.opacity   = '1';
+      metadataBlock.style.opacity  = '1';
+      isVisible = true;
+      log('📻 Show mode: ' + showName + ' (' + url + ')', 'log-ok');
+    }, showPlaceholder);
+  }
+
   // ── APPLY VERIFIED METADATA ──────────────────────────────
   function applyMetadata(t) {
     var artist     = t.track_artist || '';
@@ -358,6 +592,10 @@
     var artworkUrl = (t.artwork_urls && (t.artwork_urls.large || t.artwork_urls.standard)) || '';
     var release    = album  ? checkUpcomingAlbum(artist, album) : null;
     var concert    = artist ? checkUpcomingConcert(artist)      : null;
+
+    verifying        = false;
+    trackConfirmedAt = Date.now();
+    trackDurationMs  = t.track_duration || null;
 
     // Cache this clean result so drift recovery can use it later
     if (confirmedTitle) {
@@ -501,12 +739,16 @@
         }
       })
       .catch(function(err) {
+        verifying = false;
         log('❌ v2 fetch failed: ' + err.message, 'log-fail');
       });
   }
 
   // Display using cleanly cached metadata
   function applyMetadataFromCache(cached) {
+    verifying        = false;
+    trackConfirmedAt = Date.now();
+    trackDurationMs  = null; // not stored in cache — falls back to STALE_FALLBACK_MS
     var release = cached.album ? checkUpcomingAlbum(cached.artist, cached.album) : null;
     var concert = cached.artist ? checkUpcomingConcert(cached.artist) : null;
     log('✅ Displaying from cache: ' + cached.artist + ' / ' + cached.trackTitle + ' / ' + cached.album, 'log-ok');
@@ -516,6 +758,9 @@
   // Display with artist/title only — no album or artwork
   // Used when v2 has drifted and we have no cached clean data
   function applyMetadataPartial(rawTitle, t) {
+    verifying        = false;
+    trackConfirmedAt = Date.now();
+    trackDurationMs  = (t && t.track_duration) || null;
     // Use v2's track_artist if it matches, else parse from raw title
     var artist     = '';
     var trackTitle = '';
@@ -547,29 +792,33 @@
         if (rawTitle === pendingTitle) {
           if (rawTitle !== confirmedTitle) {
             confirmedTitle = rawTitle;
+            verifying      = true;
             log('⏳ Confirmed: ' + rawTitle, 'log-wait');
             fadeOut().then(function() {
               fetchAndVerifyV2(rawTitle, 1);
             });
           }
         } else {
-          if (rawTitle !== confirmedTitle && isVisible) {
+          if (rawTitle !== confirmedTitle && isVisible && displayMode === 'track') {
             log('⬇️ New title — fading out stale metadata', 'log-wait');
             fadeOut();
           }
           pendingTitle = rawTitle;
           log('⏳ Holding: ' + rawTitle, 'log-wait');
         }
+        evaluateDisplayState();
       })
       .catch(function(err) {
         log('❌ Poll failed: ' + err.message, 'log-fail');
+        evaluateDisplayState();
       });
   }
 
   // ── INIT ─────────────────────────────────────────────────
   function init() {
     grabDom();
-    Promise.all([loadUpcomingAlbums(), loadUpcomingConcerts()]).then(function() {
+    Promise.all([loadUpcomingAlbums(), loadUpcomingConcerts(), loadShowSchedule()]).then(function() {
+      evaluateDisplayState();
       fetchNowPlaying();
       setInterval(fetchNowPlaying, POLL_INTERVAL_MS);
     });
