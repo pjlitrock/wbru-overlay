@@ -89,6 +89,7 @@
   var metaSong, metaArtistRow, metaArtist, metaConcert;
   var metaAlbumRow, metaAlbum, metaRelease;
   var artImg, artPlaceholder, artworkBlock, metadataBlock;
+  var showBadge, showNameEl, showArtImg, showArtPlaceholder;
 
   function grabDom() {
     debugEl        = document.getElementById('debug');
@@ -105,12 +106,31 @@
     artPlaceholder = document.getElementById('artwork-placeholder');
     artworkBlock   = document.getElementById('artwork-block');
     metadataBlock  = document.getElementById('metadata-block');
+    showBadge          = document.getElementById('show-badge');           // may not exist on every client
+    showNameEl         = document.getElementById('show-name');
+    showArtImg         = document.getElementById('show-artwork-img');
+    showArtPlaceholder = document.getElementById('show-artwork-placeholder');
 
     if (debugTitleEl) debugTitleEl.textContent = DEBUG_TITLE;
     if (debugEl) debugEl.style.display = DEBUG ? 'block' : 'none';
 
     artworkBlock.style.opacity  = '0';
     metadataBlock.style.opacity = '0';
+    if (showBadge) showBadge.style.opacity = '0';
+  }
+
+  // Forces a style flush before setting opacity to '1', guaranteeing the
+  // CSS transition actually plays even when content changed synchronously
+  // (e.g. a cache hit resolving instantly) right before the reveal.
+  function revealBlocks(elements) {
+    elements = elements.filter(function(el) { return !!el; });
+    elements.forEach(function(el) { el.style.opacity = '0'; });
+    if (elements[0]) void elements[0].offsetHeight; // force reflow
+    requestAnimationFrame(function() {
+      requestAnimationFrame(function() {
+        elements.forEach(function(el) { el.style.opacity = '1'; });
+      });
+    });
   }
 
   // ── LOGGING ─────────────────────────────────────────────
@@ -387,6 +407,15 @@
     return exactMatch || dailyMatch || defaultRow;
   }
 
+  // The station's "Default" schedule row, regardless of current time —
+  // used as fallback branding artwork for tracks with no album art.
+  function getDefaultShowRow() {
+    for (var i = 0; i < showSchedule.length; i++) {
+      if (showSchedule[i].day.toLowerCase() === 'default') return showSchedule[i];
+    }
+    return null;
+  }
+
   // Resolves a show's artwork folder to an actual image URL by asking
   // GitHub's API what's in the folder — this is what lets each folder
   // hold an image with ANY filename (no fixed "cover.jpg" convention),
@@ -475,10 +504,34 @@
       if (!isVisible) { resolve(); return; }
       artworkBlock.style.opacity  = '0';
       metadataBlock.style.opacity = '0';
+      if (showBadge) showBadge.style.opacity = '0';
       isVisible = false;
       log('⬇️ Fading out', 'log-wait');
       setTimeout(resolve, FADE_DURATION_MS);
     });
+  }
+
+  // Fills the track artwork slot when a track has no artwork of its own
+  // (missing, or failed to load) — uses the station's Default show artwork
+  // as branding instead of a blank placeholder icon, if one is available.
+  function useTrackArtworkFallback(onDone) {
+    var defaultRow = SCHEDULE_CSV_URL ? getDefaultShowRow() : null;
+    if (defaultRow && defaultRow.artworkFolder) {
+      resolveShowArtworkUrl(defaultRow.artworkFolder, function(url) {
+        artImg.src                   = url;
+        artPlaceholder.style.display = 'none';
+        artImg.style.display         = 'block';
+        onDone();
+      }, function() {
+        artImg.style.display         = 'none';
+        artPlaceholder.style.display = 'flex';
+        onDone();
+      });
+    } else {
+      artImg.style.display         = 'none';
+      artPlaceholder.style.display = 'flex';
+      onDone();
+    }
   }
 
   function fadeIn(artist, trackTitle, album, artworkUrl, releaseLabel, concertLabel) {
@@ -488,7 +541,6 @@
     fadeOut().then(function() {
       displayMode      = 'track';
       currentShowKey   = null;
-      metaArtistRow.style.display = 'flex'; // in case show mode hid it
       metaSong.textContent   = trackTitle;
       metaArtist.textContent = artist;
 
@@ -517,66 +569,59 @@
         metaAlbumRow.style.display = 'none';
       }
 
+      function reveal() {
+        isVisible = true;
+        revealBlocks([artworkBlock, metadataBlock]);
+        log('✅ Faded in: ' + artist + ' — ' + trackTitle, 'log-ok');
+      }
+
       if (artworkUrl) {
         var tmp    = new Image();
         tmp.onload = function() {
           artImg.src                   = artworkUrl;
           artPlaceholder.style.display = 'none';
           artImg.style.display         = 'block';
-          artworkBlock.style.opacity   = '1';
-          metadataBlock.style.opacity  = '1';
-          isVisible = true;
-          log('✅ Faded in: ' + artist + ' — ' + trackTitle, 'log-ok');
+          reveal();
         };
         tmp.onerror = function() {
-          artImg.style.display         = 'none';
-          artPlaceholder.style.display = 'flex';
-          artworkBlock.style.opacity   = '1';
-          metadataBlock.style.opacity  = '1';
-          isVisible = true;
-          log('❌ Artwork failed, text only: ' + artworkUrl, 'log-fail');
+          log('❌ Artwork failed to load, using fallback: ' + artworkUrl, 'log-fail');
+          useTrackArtworkFallback(reveal);
         };
         tmp.src = artworkUrl;
       } else {
-        artImg.style.display         = 'none';
-        artPlaceholder.style.display = 'flex';
-        artworkBlock.style.opacity   = '1';
-        metadataBlock.style.opacity  = '1';
-        isVisible = true;
+        useTrackArtworkFallback(reveal);
       }
     });
   }
 
-  // Displays a scheduled show's name/artwork in place of track metadata.
-  // Only the song line is used; artist/concert/album/release rows are hidden.
+  // Displays a scheduled show's name/artwork in the upper-right show badge.
   // Always fades out whatever's currently on screen first (a no-op wait if
   // nothing is currently visible), same guarantee as fadeIn().
   function fadeInShow(showName, artworkFolder) {
     fadeOut().then(function() {
-      metaSong.textContent        = showName;
-      metaArtist.textContent      = '';
-      metaArtistRow.style.display = 'none';
-      metaAlbumRow.style.display  = 'none';
+      if (!showBadge) return; // this client doesn't have the show-badge markup
+      showNameEl.textContent = showName;
+
+      function reveal() {
+        isVisible = true;
+        revealBlocks([showBadge]);
+      }
 
       function showPlaceholder() {
-        artImg.style.display         = 'none';
-        artPlaceholder.style.display = 'flex';
-        artworkBlock.style.opacity   = '1';
-        metadataBlock.style.opacity  = '1';
-        isVisible = true;
+        showArtImg.style.display         = 'none';
+        showArtPlaceholder.style.display = 'flex';
         log('📻 Show mode (no artwork found): ' + showName, 'log-ok');
+        reveal();
       }
 
       if (!artworkFolder) { showPlaceholder(); return; }
 
       resolveShowArtworkUrl(artworkFolder, function(url) {
-        artImg.src                   = url;
-        artPlaceholder.style.display = 'none';
-        artImg.style.display         = 'block';
-        artworkBlock.style.opacity   = '1';
-        metadataBlock.style.opacity  = '1';
-        isVisible = true;
+        showArtImg.src                   = url;
+        showArtPlaceholder.style.display = 'none';
+        showArtImg.style.display         = 'block';
         log('📻 Show mode: ' + showName + ' (' + url + ')', 'log-ok');
+        reveal();
       }, showPlaceholder);
     });
   }
