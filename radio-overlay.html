@@ -38,6 +38,20 @@
   </div>
 </div>
 
+<!-- Shown instead of the above whenever there's no song info on screen
+     (between-song gaps, dead air). Upper-right, independent of lower-block. -->
+<div id="show-badge">
+  <div id="show-name" class="meta-shadow"></div>
+  <div id="show-artwork-block">
+    <div id="show-artwork-placeholder">
+      <svg width="80" height="80" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg">
+        <path d="M9 18V5l12-2v13M9 18c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-2c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z"/>
+      </svg>
+    </div>
+    <img id="show-artwork-img" alt="Show Artwork" />
+  </div>
+</div>
+
 <script>
   // ── THIS STATION'S CONFIG ──────────────────────────────
   window.OVERLAY_CONFIG = {
