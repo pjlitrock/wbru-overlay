@@ -48,8 +48,9 @@
     albumsCsvUrl:   'https://docs.google.com/spreadsheets/d/e/2PACX-1vQOWhnzYjSHDGH9_sVF6NiKduAUhAFkEYtWn4FOId6DmU5dIhzbXaQUNQv_toFhuJrGchvkPbhVWkM-/pub?gid=0&single=true&output=csv',
     concertsCsvUrl: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSuuWfJqxFUDSDlqFKVrW4cyariFSECCAwZ-qTrDm8lDP20mi1Ulr_VJ3pw35ZbUYnMuHtLZWSClEm8/pub?gid=0&single=true&output=csv',
 
-    // Show schedule — used to identify what's on air when track metadata
-    // goes stale (no update for longer than the track's own duration).
+    // Show schedule — displays the currently-scheduled show's name/artwork
+    // any time track metadata isn't the thing on screen (between-song
+    // hold/verify gaps, drift-recovery gaps, dead air — all of it).
     // Sheet columns: Day, Start_Time, End_Time, Show, Artwork_Link
     // Artwork_Link is a repo-relative folder path, e.g. "shows/retro-lunch"
     // — put any single .jpg/.png/.jpeg file in that folder, any filename.
@@ -63,9 +64,7 @@
     // pollIntervalMs: 12000,
     // v2MatchRetries: 4,
     // v2RetryDelayMs: 4000,
-    // fadeDurationMs: 600,
-    // staleBufferMs: 30000,          // grace period past a track's duration before it's "stale"
-    // staleFallbackMs: 300000        // used when a track's duration is unknown
+    // fadeDurationMs: 600
   };
 </script>
 <script src="shared/overlay-engine.js"></script>
