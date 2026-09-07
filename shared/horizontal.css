@@ -51,28 +51,49 @@ body {
 
 /* ── SHOW BADGE (upper-right) ─────────────────────────────
    Shown instead of #lower-block whenever there's no song info
-   on screen. Artwork is pinned to an absolute position so its
-   distance from the frame's top/left edges stays constant even
-   as its size changes — it does NOT grow/shrink from a
-   right-anchored flex flow, which would otherwise shift its
-   left edge whenever the size changes. */
+   on screen. Anchored via top+right, matching the same distance
+   from the frame's top/right edges as the song artwork's original
+   position — the artwork's own fixed size (283px) means its right
+   edge (flush against the badge) stays put regardless of how long
+   the show name/host text is. */
 #show-badge {
   position: absolute;
   top: 64px;
-  left: 0;
-  right: 0;
-  height: 283px; /* matches show-artwork-block's height */
+  right: 64px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 24px;
   opacity: 0;
   transition: opacity 0.6s ease;
 }
 
+#show-text {
+  display: flex;
+  flex-direction: column;
+  text-align: right;
+  white-space: nowrap;
+}
+#show-name {
+  font-size: 44px;
+  font-weight: 700;
+  color: #ffffff;
+  line-height: 1.15;
+}
+#show-host {
+  font-size: 44px;
+  font-weight: 400;
+  color: #ffffff;
+  line-height: 1.15;
+  display: none; /* toggled on by JS only when a host is present */
+}
+
 #show-artwork-block {
-  position: absolute;
-  top: 0;
-  left: 1456px; /* = 1920 - 64 (frame margin) - 400 (original artwork size) — kept fixed on purpose */
   width: 283px;  /* half the area of the 400×400 song artwork */
   height: 283px;
+  flex-shrink: 0;
   background: #111;
+  position: relative;
 }
 #show-artwork-img {
   width: 100%;
@@ -90,29 +111,3 @@ body {
   justify-content: center;
 }
 #show-artwork-placeholder svg { opacity: 0.2; }
-
-/* Show name (bold) + host (normal), stacked like song title/artist.
-   Right-anchored so it always ends 24px left of the artwork's fixed
-   left edge (1456 - 24 = 1432, i.e. right: 1920-1432 = 488px), and
-   vertically centered against the artwork regardless of 1 vs 2 lines. */
-#show-text {
-  position: absolute;
-  top: 50%;
-  right: 488px;
-  transform: translateY(-50%);
-  text-align: left;
-  white-space: nowrap;
-}
-#show-name {
-  font-size: 44px;
-  font-weight: 700;
-  color: #ffffff;
-  line-height: 1.15;
-}
-#show-host {
-  font-size: 44px;
-  font-weight: 400;
-  color: #ffffff;
-  line-height: 1.15;
-  display: none; /* toggled on by JS only when a host is present */
-}
