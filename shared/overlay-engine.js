@@ -89,7 +89,7 @@
   var metaSong, metaArtistRow, metaArtist, metaConcert;
   var metaAlbumRow, metaAlbum, metaRelease;
   var artImg, artPlaceholder, artworkBlock, metadataBlock;
-  var showBadge, showNameEl, showArtImg, showArtPlaceholder;
+  var showBadge, showNameEl, showHostEl, showArtImg, showArtPlaceholder;
 
   function grabDom() {
     debugEl        = document.getElementById('debug');
@@ -108,6 +108,7 @@
     metadataBlock  = document.getElementById('metadata-block');
     showBadge          = document.getElementById('show-badge');           // may not exist on every client
     showNameEl         = document.getElementById('show-name');
+    showHostEl         = document.getElementById('show-host');
     showArtImg         = document.getElementById('show-artwork-img');
     showArtPlaceholder = document.getElementById('show-artwork-placeholder');
 
@@ -342,7 +343,8 @@
             startMin:      startStr ? parseTimeToMinutes(startStr) : null,
             endMin:        endStr   ? parseTimeToMinutes(endStr)   : null,
             show:          (cols[3] || '').trim(),
-            artworkFolder: (cols[4] || '').trim()
+            artworkFolder: (cols[4] || '').trim(),
+            host:          (cols[5] || '').trim()
           });
         }
         showSchedule = parsed;
@@ -488,7 +490,7 @@
         currentShowKey = showKey;
         displayMode    = 'show';
         log('📻 No song info on screen — showing schedule: ' + show.show, 'log-wait');
-        fadeInShow(show.show, show.artworkFolder);
+        fadeInShow(show.show, show.artworkFolder, show.host);
       }
     } else if (displayMode !== 'blank' && displayMode !== 'none') {
       displayMode = 'blank';
@@ -597,10 +599,17 @@
   // Displays a scheduled show's name/artwork in the upper-right show badge.
   // Always fades out whatever's currently on screen first (a no-op wait if
   // nothing is currently visible), same guarantee as fadeIn().
-  function fadeInShow(showName, artworkFolder) {
+  function fadeInShow(showName, artworkFolder, host) {
     fadeOut().then(function() {
       if (!showBadge) return; // this client doesn't have the show-badge markup
       showNameEl.textContent = showName;
+      if (host) {
+        showHostEl.textContent   = host;
+        showHostEl.style.display = 'block';
+      } else {
+        showHostEl.textContent   = '';
+        showHostEl.style.display = 'none';
+      }
 
       function reveal() {
         isVisible = true;
