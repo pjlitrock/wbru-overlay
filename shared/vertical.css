@@ -16,11 +16,15 @@ body {
   max-height: 700px;
 }
 
-/* Metadata stacked above artwork, left-aligned, same width as artwork */
+/* Metadata stacked above artwork, left-aligned. Artwork stays 400px
+   (its own fixed size), but the block itself is widened to the full
+   available width (1080 - 64 left margin - 64 right margin) so text
+   lines only wrap when they'd actually cross the right margin, rather
+   than wrapping early just because the artwork below is narrower. */
 #lower-block {
   flex-direction: column;
   align-items: flex-start;
-  width: 400px;
+  width: 952px;
   gap: 16px;
 }
 
