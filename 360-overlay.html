@@ -38,6 +38,23 @@
   </div>
 </div>
 
+<!-- Shown instead of the above whenever there's no song info on screen
+     (between-song gaps, dead air). Upper-right, independent of lower-block. -->
+<div id="show-badge">
+  <div id="show-text">
+    <div id="show-name" class="meta-shadow"></div>
+    <div id="show-host" class="meta-shadow"></div>
+  </div>
+  <div id="show-artwork-block">
+    <div id="show-artwork-placeholder">
+      <svg width="80" height="80" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg">
+        <path d="M9 18V5l12-2v13M9 18c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-2c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z"/>
+      </svg>
+    </div>
+    <img id="show-artwork-img" alt="Show Artwork" />
+  </div>
+</div>
+
 <script>
   // ── THIS STATION'S CONFIG ──────────────────────────────
   window.OVERLAY_CONFIG = {
@@ -46,7 +63,19 @@
     debugTitle:     'WBRU360 OVERLAY — DIAGNOSTIC LOG (newest first)',
 
     albumsCsvUrl:   'https://docs.google.com/spreadsheets/d/e/2PACX-1vQOWhnzYjSHDGH9_sVF6NiKduAUhAFkEYtWn4FOId6DmU5dIhzbXaQUNQv_toFhuJrGchvkPbhVWkM-/pub?gid=0&single=true&output=csv',
-    concertsCsvUrl: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSuuWfJqxFUDSDlqFKVrW4cyariFSECCAwZ-qTrDm8lDP20mi1Ulr_VJ3pw35ZbUYnMuHtLZWSClEm8/pub?gid=0&single=true&output=csv'
+    concertsCsvUrl: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSuuWfJqxFUDSDlqFKVrW4cyariFSECCAwZ-qTrDm8lDP20mi1Ulr_VJ3pw35ZbUYnMuHtLZWSClEm8/pub?gid=0&single=true&output=csv',
+
+    // Show schedule — displays the currently-scheduled show's name/artwork
+    // any time track metadata isn't the thing on screen (between-song
+    // hold/verify gaps, drift-recovery gaps, dead air — all of it).
+    // Sheet columns: Day, Start_Time, End_Time, Show, Artwork_Link
+    // Artwork_Link is a repo-relative folder path, e.g. "shows/360-in-the-morning"
+    // — put any single .jpg/.png/.jpeg file in that folder, any filename.
+    // See shows/README.md.
+    scheduleCsvUrl:  'https://docs.google.com/spreadsheets/d/e/2PACX-1vTYon4LTtWjYEiuwtHv5x4cMREjemGS_Ytw-ogmC8NKZuQbS74Jl76Iap1Ca6chvrCQKo2a85gG3xBI/pub?gid=0&single=true&output=csv',
+    scheduleTimezone: 'America/New_York',
+    githubRepo:       'pjlitrock/wbru-overlay',
+    githubBranch:     'main'
 
     // Optional overrides (defaults shown):
     // pollIntervalMs: 12000,
