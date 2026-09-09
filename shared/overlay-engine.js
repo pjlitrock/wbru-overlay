@@ -355,9 +355,10 @@
       });
   }
 
-  // Parses "12:00 PM" / "1:05 AM" style strings into minutes-since-midnight.
+  // Parses "12:00 PM" / "1:05 AM" or "12:00:00 PM" / "1:05:30 AM" style
+  // strings (seconds optional) into minutes-since-midnight.
   function parseTimeToMinutes(str) {
-    var m = str.match(/^(\d{1,2}):(\d{2})\s*([AaPp][Mm])$/);
+    var m = str.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*([AaPp][Mm])$/);
     if (!m) return null;
     var h  = parseInt(m[1], 10);
     var mi = parseInt(m[2], 10);
