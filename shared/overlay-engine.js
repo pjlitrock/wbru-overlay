@@ -624,7 +624,25 @@
         reveal();
       }
 
-      if (!artworkFolder) { showPlaceholder(); return; }
+      // Falls back to the station's Default show artwork (general branding)
+      // when this specific show has no artwork of its own — same idea as
+      // the track-artwork fallback, just for the show badge.
+      function tryDefaultArtwork() {
+        var defaultRow = getDefaultShowRow();
+        if (defaultRow && defaultRow.artworkFolder && defaultRow.artworkFolder !== artworkFolder) {
+          resolveShowArtworkUrl(defaultRow.artworkFolder, function(url) {
+            showArtImg.src                   = url;
+            showArtPlaceholder.style.display = 'none';
+            showArtImg.style.display         = 'block';
+            log('📻 Show mode: ' + showName + ' (using station default artwork: ' + url + ')', 'log-ok');
+            reveal();
+          }, showPlaceholder);
+        } else {
+          showPlaceholder();
+        }
+      }
+
+      if (!artworkFolder) { tryDefaultArtwork(); return; }
 
       resolveShowArtworkUrl(artworkFolder, function(url) {
         showArtImg.src                   = url;
@@ -632,7 +650,7 @@
         showArtImg.style.display         = 'block';
         log('📻 Show mode: ' + showName + ' (' + url + ')', 'log-ok');
         reveal();
-      }, showPlaceholder);
+      }, tryDefaultArtwork);
     });
   }
 
