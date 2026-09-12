@@ -287,6 +287,15 @@
     return 3;
   }
 
+  // Omit the state only for these specific flagship cities — NOT the
+  // entire state. A Norwalk, CT show is still "far" even though CT
+  // itself is a close-by state; only Boston/Hartford/Providence proper
+  // are markets the audience already knows without a state label.
+  function isHomeCity(city) {
+    var c = (city || '').trim().toLowerCase();
+    return c === 'boston' || c === 'hartford' || c === 'providence';
+  }
+
   function checkUpcomingConcert(artist) {
     if (!artist) return null;
     var today = new Date();
@@ -312,7 +321,7 @@
     var next    = matches[0];
     var dateStr = next.concertDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
     // Omit state for RI, MA, and CT — audience knows these markets
-    var isLocal = statePriority(next.state) <= 2;
+    var isLocal = isHomeCity(next.city);
     var location = isLocal ? next.city : next.city + ', ' + (next.state || '').trim().toUpperCase();
     return dateStr + ' @ ' + next.venue + ' - ' + location;
   }
