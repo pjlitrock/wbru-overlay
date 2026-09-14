@@ -352,8 +352,9 @@
             startMin:      startStr ? parseTimeToMinutes(startStr) : null,
             endMin:        endStr   ? parseTimeToMinutes(endStr)   : null,
             show:          (cols[3] || '').trim(),
-            artworkFolder: (cols[4] || '').trim(),
-            host:          (cols[5] || '').trim()
+            host:          (cols[4] || '').trim(),
+            artworkFolder: (cols[5] || '').trim()
+            // cols[6] = OBS_Scene, cols[7] = Live — not read/used yet
           });
         }
         showSchedule = parsed;
