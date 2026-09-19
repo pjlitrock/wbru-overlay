@@ -26,6 +26,35 @@
    state abbreviation for RI/MA/CT (home markets)
    but still uses the fuller set of state names for
    sorting priority.
+
+   Block-file note: set cfg.blockTrackDurationMs on
+   a per-station basis (see 360-overlay.html) to
+   treat any "track" whose v2-reported duration is
+   at or above that length as a static block file —
+   e.g. a DJ set uploaded as one long file with
+   metadata that never updates — rather than a real
+   song. Detection is immediate (based on the file's
+   actual reported length, not on watching the clock
+   for the metadata to go stale), and a detected
+   block file is never shown as "now playing"; the
+   show schedule takes over instead, including
+   flipping to a new show's badge the moment a
+   back-to-back block file starts during a different
+   scheduled show. Leave unset on stations where real
+   tracks can legitimately run that long.
+
+   Overstayed-track note: separately, and on by
+   default whenever scheduleCsvUrl is set, a track
+   already on screen is checked against its own
+   reported duration plus cfg.staleTrackBufferMs
+   (default 90s). If it's run well past that with no
+   metadata change, it's treated as stale and the
+   show badge takes over — this is what catches an
+   unattended live show where the DJ never logs song
+   info at all, since in that case the title itself
+   never changes and nothing else would ever
+   re-examine it. Pass staleTrackBufferMs: false to
+   disable.
 ════════════════════════════════════════════ */
 
 (function () {
@@ -54,6 +83,24 @@
   var GITHUB_REPO          = cfg.githubRepo   || null; // e.g. 'pjlitrock/wbru-overlay' — required to resolve show artwork
   var GITHUB_BRANCH        = cfg.githubBranch || 'main';
 
+  // Optional: any "track" whose v2-reported duration is at or above this
+  // is treated as a static block file (e.g. a DJ set uploaded as one long
+  // file with metadata that never updates), not a real song — see the
+  // block-file note at the top of this file. Off by default — only set
+  // this on stations where it's a real risk, since a station with
+  // genuinely long songs could otherwise have a real track misclassified.
+  var BLOCK_TRACK_DURATION_MS = cfg.blockTrackDurationMs || null;
+
+  // Once a currently-displayed track has been on screen for longer than
+  // its own reported duration plus this buffer — with no metadata change
+  // in the meantime — treat it as stale and fall back to the show badge.
+  // Catches an unattended live show where the DJ never logs song info at
+  // all, so the last real track's info would otherwise stay on screen
+  // indefinitely (the title never changes, so nothing else re-checks it).
+  // On by default (90s buffer) whenever a show schedule is configured;
+  // pass `false` to disable, or a number of ms to use a different buffer.
+  var STALE_TRACK_BUFFER_MS = (cfg.staleTrackBufferMs === false) ? null : (cfg.staleTrackBufferMs || 90000);
+
   if (!STATION_ID) {
     console.error('OVERLAY_CONFIG.stationId is required — set it before loading overlay-engine.js');
     return;
@@ -70,6 +117,9 @@
   var upcomingConcerts = [];
   var showSchedule     = [];
   var artworkUrlCache  = {}; // folderPath -> { url, resolvedAt } (GitHub API folder listing results)
+  var knownBlockTitles = {}; // rawTitle -> true, once its v2 duration has identified it as a static block file
+  var confirmedDurationMs = null; // reported duration (ms) of the currently-displayed track, when known
+  var confirmedAtTime     = null; // Date.now() when the currently-displayed track was verified/shown
 
   // Show-mode state
   var displayMode      = 'none'; // 'none' | 'track' | 'show' | 'blank'
@@ -486,13 +536,26 @@
 
   // Shows the currently-scheduled show's name/artwork whenever track
   // metadata isn't the thing on screen — covers the hold-and-verify gap
-  // between songs, drift-recovery gaps, and genuine dead air alike.
-  // No-op entirely unless scheduleCsvUrl is configured.
+  // between songs, drift-recovery gaps, genuine dead air, and (via the
+  // overstayed-track check below) an unattended live show where the DJ
+  // never updates the metadata at all. No-op entirely unless
+  // scheduleCsvUrl is configured.
   function fillGapIfNeeded() {
     if (!SCHEDULE_CSV_URL) return;
 
-    var trackShowing = (displayMode === 'track' && isVisible);
-    if (trackShowing) return;
+    if (displayMode === 'track' && isVisible) {
+      // A track is currently on screen. Normally that's reason enough to
+      // leave it alone — but if it has been sitting there well past its
+      // own reported duration without any metadata change, the DJ has
+      // likely gone live without logging song info, so the old track
+      // info would otherwise never clear. Fall through to the show
+      // lookup below instead of returning early.
+      var overstayed = STALE_TRACK_BUFFER_MS && confirmedDurationMs && confirmedAtTime &&
+                        (Date.now() - confirmedAtTime) > (confirmedDurationMs + STALE_TRACK_BUFFER_MS);
+      if (!overstayed) return;
+      log('⏰ "' + confirmedTitle + '" has run well past its reported duration with no metadata update — likely an unattended live show, switching to show badge', 'log-wait');
+      fadeOut();
+    }
 
     var show = getCurrentShow();
     if (show) {
@@ -672,12 +735,19 @@
     var artworkUrl = (t.artwork_urls && (t.artwork_urls.large || t.artwork_urls.standard)) || '';
     var release    = album  ? checkUpcomingAlbum(artist, album) : null;
     var concert    = artist ? checkUpcomingConcert(artist)      : null;
+    var durationMs = (typeof t.track_duration === 'number') ? t.track_duration : null;
+
+    // Record this track's own reported duration and confirmation time so
+    // fillGapIfNeeded() can tell whether it has overstayed its welcome —
+    // see the overstayed-track check there.
+    confirmedDurationMs = durationMs;
+    confirmedAtTime      = Date.now();
 
     // Cache this clean result so drift recovery can use it later
     if (confirmedTitle) {
       cacheSet(confirmedTitle, {
         artist: artist, trackTitle: trackTitle,
-        album: album, artworkUrl: artworkUrl
+        album: album, artworkUrl: artworkUrl, durationMs: durationMs
       });
     }
 
@@ -762,6 +832,30 @@
           return;
         }
         var t        = json.data;
+
+        // ── BLOCK-FILE DETECTION ─────────────────────────
+        // radio.co reports the actual file's length as track_duration.
+        // A DJ set uploaded as one long file for the whole show reports
+        // its real (very long) duration here immediately — no need to
+        // wait and see whether the metadata ever changes. Anything at
+        // or above the configured threshold is treated as a static
+        // block file, not a real track, and is never shown as "now
+        // playing"; fillGapIfNeeded() (already re-run on every poll
+        // whenever a track isn't on screen) hands off to the show
+        // schedule instead, which will flip to a different show's
+        // badge the instant the clock says a new show has started —
+        // even mid-block-file, and even across two back-to-back block
+        // files for different shows.
+        var reportedDuration = t && t.track_duration;
+        if (BLOCK_TRACK_DURATION_MS && typeof reportedDuration === 'number' &&
+            reportedDuration >= BLOCK_TRACK_DURATION_MS) {
+          knownBlockTitles[expectedRawTitle] = true;
+          log('🧱 "' + expectedRawTitle + '" reports ' + Math.round(reportedDuration / 60000) +
+              ' min duration — treating as a show-long block file, deferring to show schedule', 'log-wait');
+          fillGapIfNeeded();
+          return;
+        }
+
         var v2Title  = (t && t.title)        || '';
         var v2Artist = (t && t.track_artist) || '';
 
@@ -787,7 +881,8 @@
             artist:     t.track_artist || '',
             trackTitle: t.track_title  || '',
             album:      t.track_album  || '',
-            artworkUrl: (t.artwork_urls && (t.artwork_urls.large || t.artwork_urls.standard)) || ''
+            artworkUrl: (t.artwork_urls && (t.artwork_urls.large || t.artwork_urls.standard)) || '',
+            durationMs: (typeof t.track_duration === 'number') ? t.track_duration : null
           });
           applyMetadata(t);
         } else if (titleMatch && (!artistMatch || !durationOk)) {
@@ -823,6 +918,8 @@
   function applyMetadataFromCache(cached) {
     var release = cached.album ? checkUpcomingAlbum(cached.artist, cached.album) : null;
     var concert = cached.artist ? checkUpcomingConcert(cached.artist) : null;
+    confirmedDurationMs = (typeof cached.durationMs === 'number') ? cached.durationMs : null;
+    confirmedAtTime      = Date.now();
     log('✅ Displaying from cache: ' + cached.artist + ' / ' + cached.trackTitle + ' / ' + cached.album, 'log-ok');
     fadeIn(cached.artist, cached.trackTitle, cached.album, cached.artworkUrl, release, concert);
   }
@@ -841,6 +938,13 @@
       trackTitle = rawTitle;
     }
     var concert = artist ? checkUpcomingConcert(artist) : null;
+    // Duration is unreliable here (this is exactly the drifted data we're
+    // working around) — clear it so the overstayed-track check in
+    // fillGapIfNeeded() doesn't act on a guess, while still resetting the
+    // clock so a stale leftover timestamp from an earlier track can't
+    // trigger it prematurely either.
+    confirmedDurationMs = null;
+    confirmedAtTime      = Date.now();
     log('⚠️ Partial display (no album/artwork): ' + artist + ' / ' + trackTitle, 'log-wait');
     fadeIn(artist, trackTitle, '', '', null, concert);
   }
@@ -864,7 +968,11 @@
             log('⏳ Confirmed: ' + rawTitle, 'log-wait');
             fadeOut().then(function() {
               fillGapIfNeeded(); // show info fills the verification gap, if configured
-              fetchAndVerifyV2(rawTitle, 1);
+              if (knownBlockTitles[rawTitle]) {
+                log('🧱 Known block file — skipping v2 verification, deferring to show schedule', 'log-wait');
+              } else {
+                fetchAndVerifyV2(rawTitle, 1);
+              }
             });
           }
         } else {
