@@ -75,7 +75,18 @@
     scheduleCsvUrl:  'https://docs.google.com/spreadsheets/d/e/2PACX-1vTYon4LTtWjYEiuwtHv5x4cMREjemGS_Ytw-ogmC8NKZuQbS74Jl76Iap1Ca6chvrCQKo2a85gG3xBI/pub?gid=0&single=true&output=csv',
     scheduleTimezone: 'America/New_York',
     githubRepo:       'pjlitrock/wbru-overlay',
-    githubBranch:     'main'
+    githubBranch:     'main',
+
+    // 360 DJs sometimes upload a full set as one file with static
+    // metadata/artwork that doesn't change for the whole show. radio.co
+    // reports that file's true (long) length as its track duration, so
+    // any "track" reporting 8+ minutes — well above the ~6:30 longest
+    // real song in the 360 library — is treated as a show-long block
+    // file rather than a real song, and the show badge takes over
+    // immediately instead of showing its stale metadata at all. Not set
+    // on radio-overlay — that library has real songs longer than 8
+    // minutes and doesn't have this show-long-file issue.
+    blockTrackDurationMs: 8 * 60 * 1000
 
     // Optional overrides (defaults shown):
     // pollIntervalMs: 12000,
