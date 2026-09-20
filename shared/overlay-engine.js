@@ -55,6 +55,17 @@
    never changes and nothing else would ever
    re-examine it. Pass staleTrackBufferMs: false to
    disable.
+
+   When a track's duration isn't known at all (0,
+   missing, or non-numeric — e.g. metadata typed
+   manually into a live encoder like BUTT rather than
+   coming from a cataloged file), the buffer above has
+   nothing to add to and would never fire. cfg.
+   staleTrackMaxAgeMs is the backstop for that case: a
+   flat ceiling (default 10 min) on how long a title
+   with no duration data can sit unchanged before it's
+   treated as stale regardless. Pass
+   staleTrackMaxAgeMs: false to disable it.
 ════════════════════════════════════════════ */
 
 (function () {
@@ -100,6 +111,17 @@
   // On by default (90s buffer) whenever a show schedule is configured;
   // pass `false` to disable, or a number of ms to use a different buffer.
   var STALE_TRACK_BUFFER_MS = (cfg.staleTrackBufferMs === false) ? null : (cfg.staleTrackBufferMs || 90000);
+
+  // Backstop for when a track's own duration isn't known at all (0,
+  // missing, or non-numeric) — e.g. metadata typed manually into a live
+  // encoder like BUTT rather than coming from a cataloged file, which
+  // has no real file length behind it for radio.co to report. In that
+  // case the buffer above never has anything to add to, so it would
+  // never trigger. This flat ceiling covers that gap: if the same title
+  // has been confirmed unchanged this long with no duration data at all,
+  // treat it as stale regardless. Default 10 minutes. Pass `false` to
+  // disable this backstop (not recommended).
+  var STALE_TRACK_MAX_AGE_MS = (cfg.staleTrackMaxAgeMs === false) ? null : (cfg.staleTrackMaxAgeMs || 10 * 60 * 1000);
 
   if (!STATION_ID) {
     console.error('OVERLAY_CONFIG.stationId is required — set it before loading overlay-engine.js');
@@ -545,15 +567,30 @@
 
     if (displayMode === 'track' && isVisible) {
       // A track is currently on screen. Normally that's reason enough to
-      // leave it alone — but if it has been sitting there well past its
-      // own reported duration without any metadata change, the DJ has
-      // likely gone live without logging song info, so the old track
-      // info would otherwise never clear. Fall through to the show
-      // lookup below instead of returning early.
-      var overstayed = STALE_TRACK_BUFFER_MS && confirmedDurationMs && confirmedAtTime &&
-                        (Date.now() - confirmedAtTime) > (confirmedDurationMs + STALE_TRACK_BUFFER_MS);
+      // leave it alone — but if it has been sitting there well past a
+      // reasonable point without any metadata change, something's wrong:
+      // either it's genuinely run past its own reported duration
+      // (unattended live show, DJ never logged the next song), or its
+      // duration was never known in the first place (manually-typed
+      // metadata from a live encoder like BUTT, with no real file behind
+      // it for radio.co to measure). Fall through to the show lookup
+      // below instead of returning early in either case.
+      var elapsed = confirmedAtTime ? (Date.now() - confirmedAtTime) : 0;
+      var overstayed = false;
+      var usingBackstop = false;
+      if (STALE_TRACK_BUFFER_MS && confirmedDurationMs && confirmedAtTime) {
+        overstayed = elapsed > (confirmedDurationMs + STALE_TRACK_BUFFER_MS);
+      } else if (STALE_TRACK_MAX_AGE_MS && confirmedAtTime) {
+        usingBackstop = true;
+        overstayed = elapsed > STALE_TRACK_MAX_AGE_MS;
+      }
       if (!overstayed) return;
-      log('⏰ "' + confirmedTitle + '" has run well past its reported duration with no metadata update — likely an unattended live show, switching to show badge', 'log-wait');
+      if (usingBackstop) {
+        log('⏰ "' + confirmedTitle + '" has been on screen for ' + Math.round(elapsed / 60000) +
+            ' min with no known duration (likely manually-entered/live metadata) — switching to show badge', 'log-wait');
+      } else {
+        log('⏰ "' + confirmedTitle + '" has run well past its reported duration with no metadata update — likely an unattended live show, switching to show badge', 'log-wait');
+      }
       fadeOut();
     }
 
