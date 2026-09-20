@@ -86,7 +86,17 @@
     // immediately instead of showing its stale metadata at all. Not set
     // on radio-overlay — that library has real songs longer than 8
     // minutes and doesn't have this show-long-file issue.
-    blockTrackDurationMs: 8 * 60 * 1000
+    blockTrackDurationMs: 8 * 60 * 1000,
+
+    // Belt-and-suspenders for metadata with no real duration behind it at
+    // all — e.g. a title typed manually into a live encoder (BUTT, etc.)
+    // for a live show, which radio.co can't report a file length for, so
+    // blockTrackDurationMs above never gets a value to compare against.
+    // Since the longest real song in the 360 library is ~6:30, anything
+    // sitting unchanged longer than that (with no duration data at all)
+    // is switched to the show badge. Tighter than the engine's 10-minute
+    // default because 360's real ceiling is known precisely.
+    staleTrackMaxAgeMs: 8 * 60 * 1000
 
     // Optional overrides (defaults shown):
     // pollIntervalMs: 12000,
