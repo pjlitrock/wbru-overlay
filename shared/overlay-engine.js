@@ -161,7 +161,7 @@
   var metaSong, metaArtistRow, metaArtist, metaConcert;
   var metaAlbumRow, metaAlbum, metaRelease;
   var artImg, artPlaceholder, artworkBlock, metadataBlock;
-  var showBadge, showNameEl, showHostEl, showArtImg, showArtPlaceholder;
+  var showBadge, showNameEl, showHostEl, showArtImg, showArtPlaceholder, showArtVideo;
 
   function grabDom() {
     debugEl        = document.getElementById('debug');
@@ -183,6 +183,7 @@
     showHostEl         = document.getElementById('show-host');
     showArtImg         = document.getElementById('show-artwork-img');
     showArtPlaceholder = document.getElementById('show-artwork-placeholder');
+    showArtVideo       = document.getElementById('show-artwork-video'); // optional — animated (.gif) or video (.mp4/.webm) show artwork
 
     if (debugTitleEl) debugTitleEl.textContent = DEBUG_TITLE;
     if (debugEl) debugEl.style.display = DEBUG ? 'block' : 'none';
@@ -501,13 +502,19 @@
     return null;
   }
 
-  // Resolves a show's artwork folder to an actual image URL by asking
+  // Resolves a show's artwork folder to an actual media URL by asking
   // GitHub's API what's in the folder — this is what lets each folder
-  // hold an image with ANY filename (no fixed "cover.jpg" convention),
-  // so the filename itself can stay meaningful (date, source, notes).
+  // hold a file with ANY filename (no fixed "cover.jpg" convention), so
+  // the filename itself can stay meaningful (date, source, notes).
+  // Accepts still images (.jpg/.jpeg/.png/.gif — GIFs animate natively in
+  // the <img> tag) as well as short video clips (.mp4/.webm), which
+  // fadeInShow() routes to the <video id="show-artwork-video"> element
+  // instead of the image if that markup is present on this client.
   // Results are cached briefly per folder to avoid re-listing on every
   // stale check while a show is airing.
   var ARTWORK_CACHE_TTL_MS = 5 * 60 * 1000; // 5 min — long enough to avoid repeat calls per show, short enough to pick up a swap without a page reload
+  var ARTWORK_FILE_RE = /\.(jpe?g|png|gif|mp4|webm)$/i;
+  var ARTWORK_VIDEO_RE = /\.(mp4|webm)$/i;
 
   function resolveShowArtworkUrl(folderPath, onSuccess, onFail) {
     if (!folderPath) { onFail(); return; }
@@ -534,11 +541,11 @@
       })
       .then(function(items) {
         var images = (Array.isArray(items) ? items : [])
-          .filter(function(item) { return item.type === 'file' && /\.(jpe?g|png)$/i.test(item.name); })
+          .filter(function(item) { return item.type === 'file' && ARTWORK_FILE_RE.test(item.name); })
           .sort(function(a, b) { return a.name.localeCompare(b.name); });
 
         if (!images.length) {
-          log('⚠️ No .jpg/.png/.jpeg file found in ' + folderPath, 'log-wait');
+          log('⚠️ No .jpg/.png/.jpeg/.gif/.mp4/.webm file found in ' + folderPath, 'log-wait');
           artworkUrlCache[folderPath] = { url: null, resolvedAt: Date.now() };
           onFail();
           return;
@@ -618,6 +625,7 @@
       artworkBlock.style.opacity  = '0';
       metadataBlock.style.opacity = '0';
       if (showBadge) showBadge.style.opacity = '0';
+      if (showArtVideo && !showArtVideo.paused) showArtVideo.pause(); // stop it playing/buffering while hidden
       isVisible = false;
       log('⬇️ Fading out', 'log-wait');
       setTimeout(resolve, FADE_DURATION_MS);
@@ -729,9 +737,45 @@
 
       function showPlaceholder() {
         showArtImg.style.display         = 'none';
+        if (showArtVideo) showArtVideo.style.display = 'none';
         showArtPlaceholder.style.display = 'flex';
         log('📻 Show mode (no artwork found): ' + showName, 'log-ok');
         reveal();
+      }
+
+      // Displays a resolved artwork URL in whichever element fits: a
+      // still image (including animated .gif, which plays natively in an
+      // <img>) goes in showArtImg; .mp4/.webm goes in showArtVideo, muted
+      // and looping, if that element exists on this client. If a video
+      // URL resolves but this client's HTML doesn't have the video
+      // element yet, falls back to the placeholder rather than trying to
+      // play a video in an <img> tag.
+      function displayArtworkMedia(url, label, onDone) {
+        showArtPlaceholder.style.display = 'none';
+        if (ARTWORK_VIDEO_RE.test(url)) {
+          if (!showArtVideo) {
+            log('⚠️ ' + label + ' is a video file but this client has no #show-artwork-video element — showing placeholder', 'log-wait');
+            showArtImg.style.display = 'none';
+            showArtPlaceholder.style.display = 'flex';
+            onDone();
+            return;
+          }
+          showArtImg.style.display = 'none';
+          showArtVideo.style.display = 'block';
+          showArtVideo.src = url;
+          showArtVideo.load();
+          var playResult = showArtVideo.play();
+          if (playResult && typeof playResult.catch === 'function') {
+            playResult.catch(function(err) {
+              log('⚠️ Show artwork video failed to autoplay: ' + err.message, 'log-wait');
+            });
+          }
+        } else {
+          if (showArtVideo) showArtVideo.style.display = 'none';
+          showArtImg.style.display = 'block';
+          showArtImg.src = url;
+        }
+        onDone();
       }
 
       // Falls back to the station's Default show artwork (general branding)
@@ -741,11 +785,10 @@
         var defaultRow = getDefaultShowRow();
         if (defaultRow && defaultRow.artworkFolder && defaultRow.artworkFolder !== artworkFolder) {
           resolveShowArtworkUrl(defaultRow.artworkFolder, function(url) {
-            showArtImg.src                   = url;
-            showArtPlaceholder.style.display = 'none';
-            showArtImg.style.display         = 'block';
-            log('📻 Show mode: ' + showName + ' (using station default artwork: ' + url + ')', 'log-ok');
-            reveal();
+            displayArtworkMedia(url, 'Default show artwork', function() {
+              log('📻 Show mode: ' + showName + ' (using station default artwork: ' + url + ')', 'log-ok');
+              reveal();
+            });
           }, showPlaceholder);
         } else {
           showPlaceholder();
@@ -755,11 +798,10 @@
       if (!artworkFolder) { tryDefaultArtwork(); return; }
 
       resolveShowArtworkUrl(artworkFolder, function(url) {
-        showArtImg.src                   = url;
-        showArtPlaceholder.style.display = 'none';
-        showArtImg.style.display         = 'block';
-        log('📻 Show mode: ' + showName + ' (' + url + ')', 'log-ok');
-        reveal();
+        displayArtworkMedia(url, showName + ' artwork', function() {
+          log('📻 Show mode: ' + showName + ' (' + url + ')', 'log-ok');
+          reveal();
+        });
       }, tryDefaultArtwork);
     });
   }

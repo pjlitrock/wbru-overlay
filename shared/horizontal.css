@@ -74,12 +74,14 @@ body {
   text-align: right;
   white-space: nowrap;
 }
+
 #show-name {
   font-size: 44px;
   font-weight: 700;
   color: #ffffff;
   line-height: 1.15;
 }
+
 #show-host {
   font-size: 44px;
   font-weight: 400;
@@ -89,13 +91,19 @@ body {
 }
 
 #show-artwork-block {
-  width: 283px;  /* half the area of the 400×400 song artwork */
+  width: 283px; /* half the area of the 400×400 song artwork */
   height: 283px;
   flex-shrink: 0;
   background: #111;
   position: relative;
 }
-#show-artwork-img {
+
+/* #show-artwork-video shares this rule so an animated .gif (in the
+   <img>) and an .mp4/.webm clip (in the <video>) fill the same 283×283
+   badge slot identically — same sizing, cropping, and stacking as the
+   still-image case. JS toggles which one is display:block at a time. */
+#show-artwork-img,
+#show-artwork-video {
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -103,6 +111,7 @@ body {
   position: relative;
   z-index: 1;
 }
+
 #show-artwork-placeholder {
   position: absolute;
   inset: 0;
@@ -110,4 +119,5 @@ body {
   align-items: center;
   justify-content: center;
 }
+
 #show-artwork-placeholder svg { opacity: 0.2; }
