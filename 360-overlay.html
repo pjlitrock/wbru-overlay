@@ -52,6 +52,7 @@
       </svg>
     </div>
     <img id="show-artwork-img" alt="Show Artwork" />
+    <video id="show-artwork-video" muted loop playsinline preload="auto"></video>
   </div>
 </div>
 
@@ -70,8 +71,9 @@
     // hold/verify gaps, drift-recovery gaps, dead air — all of it).
     // Sheet columns: Day, Start_Time, End_Time, Show, Artwork_Link
     // Artwork_Link is a repo-relative folder path, e.g. "shows/360-in-the-morning"
-    // — put any single .jpg/.png/.jpeg file in that folder, any filename.
-    // See shows/README.md.
+    // — put a single .jpg/.png/.jpeg/.gif/.mp4/.webm file in that folder,
+    // any filename. Animated .gif and video (.mp4/.webm) clips play
+    // automatically, muted and looping. See shows/README.md.
     scheduleCsvUrl:  'https://docs.google.com/spreadsheets/d/e/2PACX-1vTYon4LTtWjYEiuwtHv5x4cMREjemGS_Ytw-ogmC8NKZuQbS74Jl76Iap1Ca6chvrCQKo2a85gG3xBI/pub?gid=0&single=true&output=csv',
     scheduleTimezone: 'America/New_York',
     githubRepo:       'pjlitrock/wbru-overlay',
