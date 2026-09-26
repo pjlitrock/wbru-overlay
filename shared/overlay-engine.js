@@ -400,7 +400,9 @@
   }
 
   // ── LOAD SHOW SCHEDULE ───────────────────────────────────
-  // Google Sheet columns: Day, Start_Time, End_Time, Show, Artwork_Link
+  // Google Sheet columns: Day, Start_Time, End_Time, Show, Host, Artwork_Link
+  // (Host and Artwork_Link may both be blank; OBS_Scene/Live columns
+  // after Artwork_Link, if present, aren't read yet.)
   // Day is a weekday name, "Daily" (matches every day), or "Default"
   // (catch-all fallback, blank Start_Time/End_Time, always matches).
   function loadShowSchedule() {
