@@ -66,6 +66,28 @@
    with no duration data can sit unchanged before it's
    treated as stale regardless. Pass
    staleTrackMaxAgeMs: false to disable it.
+
+   Album/artwork early-flip note (diagnostic + cache
+   guard): radio.co's v2 endpoint occasionally flips
+   track_album and artwork_urls to the NEXT song while
+   title, track_artist and track_duration are still
+   correct for the current one. Those three fields are
+   what the drift check validates, so this slips past
+   it. To help catch and diagnose it, the /status
+   endpoint's own artwork URL and start_time are
+   captured on every poll and compared against v2's
+   artwork:
+     - The comparison is always logged (visible with
+       debug: true) alongside elapsed time into the song.
+     - If the two sources visibly disagree, the result
+       is NOT written to the metadata cache, so a bad
+       album/artwork can't be replayed later by drift
+       recovery the next time that song plays.
+   This is intentionally log-and-protect only: the
+   on-screen display is unchanged. Once logs show how
+   the two sources behave in a real bad case, the
+   mismatch can be routed to the artist/title-only
+   display (applyMetadataPartial) instead.
 ════════════════════════════════════════════ */
 
 (function () {
@@ -142,6 +164,13 @@
   var knownBlockTitles = {}; // rawTitle -> true, once its v2 duration has identified it as a static block file
   var confirmedDurationMs = null; // reported duration (ms) of the currently-displayed track, when known
   var confirmedAtTime     = null; // Date.now() when the currently-displayed track was verified/shown
+
+  // Latest artwork URL and start time reported by the /status endpoint
+  // (captured on every poll). Used as an independent second source to
+  // cross-check v2's album artwork, which is the field that can flip to
+  // the next song early. Empty/null when /status doesn't provide them.
+  var statusArtworkUrl = '';
+  var statusStartTime  = null; // ms epoch, or null
 
   // Show-mode state
   var displayMode      = 'none'; // 'none' | 'track' | 'show' | 'blank'
@@ -808,7 +837,39 @@
     });
   }
 
+  // ── ARTWORK CROSS-CHECK (status vs v2) ───────────────────
+  // Compares the artwork URL from /status (independent second source)
+  // with the artwork URL from v2. Returns:
+  //   'agree'    — both present and they point at the same image
+  //   'disagree' — both present and they visibly differ
+  //   'unknown'  — one or both missing, so no conclusion can be drawn
+  // "Same image" is judged loosely (same filename, or same parent
+  // folder, ignoring query strings) because the two endpoints may serve
+  // different size variants of the same cover. A false 'disagree' is
+  // harmless: it only means that track isn't cached.
+  function urlPath(url) {
+    return (url || '').split('?')[0].split('#')[0].toLowerCase();
+  }
+  function artworkSourcesRelation(statusUrl, v2Url) {
+    if (!statusUrl || !v2Url) return 'unknown';
+    var a = urlPath(statusUrl);
+    var b = urlPath(v2Url);
+    if (a === b) return 'agree';
+    var aParts = a.split('/');
+    var bParts = b.split('/');
+    var aFile = aParts[aParts.length - 1];
+    var bFile = bParts[bParts.length - 1];
+    if (aFile && aFile === bFile) return 'agree';
+    var aDir = aParts.slice(0, -1).join('/');
+    var bDir = bParts.slice(0, -1).join('/');
+    if (aDir && aDir === bDir && aDir.split('/').length > 3) return 'agree';
+    return 'disagree';
+  }
+
   // ── APPLY VERIFIED METADATA ──────────────────────────────
+  // Note: caching is no longer done here. It happens once, in
+  // fetchAndVerifyV2(), and only after the artwork cross-check passes,
+  // so a suspect album/artwork pair can't poison the cache.
   function applyMetadata(t) {
     var artist     = t.track_artist || '';
     var trackTitle = t.track_title  || '';
@@ -823,14 +884,6 @@
     // see the overstayed-track check there.
     confirmedDurationMs = durationMs;
     confirmedAtTime      = Date.now();
-
-    // Cache this clean result so drift recovery can use it later
-    if (confirmedTitle) {
-      cacheSet(confirmedTitle, {
-        artist: artist, trackTitle: trackTitle,
-        album: album, artworkUrl: artworkUrl, durationMs: durationMs
-      });
-    }
 
     log('✅ Verified: ' + artist + ' / ' + trackTitle + ' / ' + album, 'log-ok');
 
@@ -899,6 +952,12 @@
   //      of this same track, if we've seen it before
   //   3. If no cache hit, showing artist/title only with no album or
   //      artwork — wrong info is worse than no info
+  //
+  // Known gap: the checks above only validate title, artist and
+  // duration. v2 can flip album + artwork to the next song while those
+  // three are still correct. The /status artwork cross-check below
+  // logs when that looks to be happening and keeps such results out of
+  // the cache (display behavior is unchanged for now).
   function fetchAndVerifyV2(expectedRawTitle, attempt) {
     if (v2RetryTimer) { clearTimeout(v2RetryTimer); v2RetryTimer = null; }
 
@@ -956,15 +1015,36 @@
             (fullMatch ? '✓ clean' : 'DRIFT DETECTED title=' + titleMatch + ' artist=' + artistMatch + ' duration=' + durationOk),
             fullMatch ? 'log-ok' : 'log-retry');
 
+        // ── ARTWORK CROSS-CHECK (status vs v2) ───────────
+        // Diagnostic for the "album/artwork belong to the next song"
+        // problem: logs both artwork sources side by side, plus how far
+        // into the song we are. Also decides whether this result is
+        // safe to cache.
+        var v2Art = (t && t.artwork_urls && (t.artwork_urls.large || t.artwork_urls.standard)) || '';
+        var artRelation = artworkSourcesRelation(statusArtworkUrl, v2Art);
+        var elapsedS = statusStartTime ? Math.round((Date.now() - statusStartTime) / 1000) : '?';
+        log('🔎 art check: ' + artRelation.toUpperCase() +
+            ' | elapsed ' + elapsedS + 's of ' + Math.round(duration / 1000) + 's' +
+            ' | album: "' + ((t && t.track_album) || '') + '"',
+            artRelation === 'disagree' ? 'log-fail' : 'log-wait',
+            'status art: ' + (statusArtworkUrl || '(none)') + '<br>v2 art: ' + (v2Art || '(none)'));
+
+        if (artRelation === 'disagree') {
+          log('⚠️ Status and v2 artwork disagree — v2 album/artwork may already be the NEXT song. Not caching this result.', 'log-fail');
+        }
+
         if (fullMatch) {
-          // Clean data — cache it and display
-          cacheSet(expectedRawTitle, {
-            artist:     t.track_artist || '',
-            trackTitle: t.track_title  || '',
-            album:      t.track_album  || '',
-            artworkUrl: (t.artwork_urls && (t.artwork_urls.large || t.artwork_urls.standard)) || '',
-            durationMs: (typeof t.track_duration === 'number') ? t.track_duration : null
-          });
+          // Clean data — cache it (unless the artwork cross-check says
+          // the album/artwork look suspect) and display
+          if (artRelation !== 'disagree') {
+            cacheSet(expectedRawTitle, {
+              artist:     t.track_artist || '',
+              trackTitle: t.track_title  || '',
+              album:      t.track_album  || '',
+              artworkUrl: v2Art,
+              durationMs: (typeof t.track_duration === 'number') ? t.track_duration : null
+            });
+          }
           applyMetadata(t);
         } else if (titleMatch && (!artistMatch || !durationOk)) {
           // Title matches but artist or duration signals drift —
@@ -986,7 +1066,7 @@
             fetchAndVerifyV2(expectedRawTitle, attempt + 1);
           }, V2_RETRY_DELAY_MS);
         } else {
-          log('⚠️ Still mismatched after ' + V2_MATCH_RETRIES + ' attempts — best available', 'log-fail');
+          log('⚠️ Still mismatched after ' + V2_MATCH_RETRIES + ' attempts — best available (not cached)', 'log-fail');
           applyMetadata(t);
         }
       })
@@ -1040,6 +1120,13 @@
       .then(function(data) {
         var track = data.current_track;
         if (!track) { log('⚠️ No current_track', 'log-fail'); return; }
+
+        // Capture /status's own artwork + start time on every poll, as an
+        // independent second source for the artwork cross-check in
+        // fetchAndVerifyV2().
+        statusArtworkUrl = track.artwork_url_large || track.artwork_url || '';
+        var parsedStart  = track.start_time ? new Date(track.start_time).getTime() : NaN;
+        statusStartTime  = isNaN(parsedStart) ? null : parsedStart;
 
         var rawTitle = track.title || '';
 
