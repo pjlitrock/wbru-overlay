@@ -78,7 +78,17 @@
     scheduleCsvUrl:  'https://docs.google.com/spreadsheets/d/e/2PACX-1vTYon4LTtWjYEiuwtHv5x4cMREjemGS_Ytw-ogmC8NKZuQbS74Jl76Iap1Ca6chvrCQKo2a85gG3xBI/pub?gid=1579299876&single=true&output=csv',
     scheduleTimezone: 'America/New_York',
     githubRepo:       'pjlitrock/wbru-overlay',
-    githubBranch:     'main'
+    githubBranch:     'main',
+
+    // Known Albums sheet (separate Google workbook, Sheet1).
+    // 'learn' = the on-air display is unchanged; the overlay only checks each
+    // song against iTunes and fills the sheet (failed checks go to the sheet's
+    // "Mismatch Log" tab). Change to 'use' later to make the overlay rely on
+    // the sheet. Songs under 60 seconds are ignored.
+    knownAlbumsMode:       'learn',
+    knownAlbumsCsvUrl:     'https://docs.google.com/spreadsheets/d/e/2PACX-1vSSx1CcqmM3rP9CFXsMM7nQyYgft1HaotTBJBud_DBEYsDYQOhBCbhQ-0dCg8TLCEu9CckCJm9g6zva/pub?gid=0&single=true&output=csv',
+    knownAlbumsWriteUrl:   'https://script.google.com/macros/s/AKfycbzZoLdVKHAPYgWxGiVKGLT394wjojtZvgxzE7D8Eannpf3OCcjvUyZbWzxsOtv2mtg-uQ/exec',
+    knownAlbumsWriteToken: 'qwertyismypassword4888484343'
 
     // Optional overrides (defaults shown):
     // pollIntervalMs: 12000,
