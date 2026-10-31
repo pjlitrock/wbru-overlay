@@ -88,6 +88,18 @@
    the two sources behave in a real bad case, the
    mismatch can be routed to the artist/title-only
    display (applyMetadataPartial) instead.
+
+   Album verification note (the actual fix): a live capture showed that
+   /status AND v2 can BOTH report the next item's album and artwork for
+   the song that is playing (e.g. INXS "Devil Inside" shown with Duran
+   Duran's "Rio"), so the two feeds can't check each other. Artist and
+   title are reliable. Each song's album is checked once against Apple's
+   iTunes Search service; albums that pass are added to a separate
+   "Known Albums" Google Sheet shared by all overlays. In the default
+   'learn' mode the on-air display is unchanged and the sheet is only
+   being filled (failed checks go to its "Mismatch Log" tab). Setting
+   knownAlbumsMode: 'use' makes the overlay rely on the sheet. Rows with
+   Manual = 1 keep their hand-typed Album. See the ALBUM CHECK block.
 ════════════════════════════════════════════ */
 
 (function () {
@@ -259,7 +271,8 @@
     for (var i = 0; i < row.length; i++) {
       var ch = row[i];
       if (ch === '"') {
-        inQuotes = !inQuotes;
+        if (inQuotes && row[i + 1] === '"') { current += '"'; i++; }   // "" = literal quote
+        else inQuotes = !inQuotes;
       } else if (ch === ',' && !inQuotes) {
         cols.push(current.trim());
         current = '';
@@ -843,27 +856,334 @@
   //   'agree'    — both present and they point at the same image
   //   'disagree' — both present and they visibly differ
   //   'unknown'  — one or both missing, so no conclusion can be drawn
-  // "Same image" is judged loosely (same filename, or same parent
-  // folder, ignoring query strings) because the two endpoints may serve
-  // different size variants of the same cover. A false 'disagree' is
-  // harmless: it only means that track isn't cached.
-  function urlPath(url) {
-    return (url || '').split('?')[0].split('#')[0].toLowerCase();
+  // "Same image" is judged by image ID: for radio.co covers the size
+  // suffix and extension are stripped, so the 100px and 600px versions of
+  // one cover compare equal, e.g.
+  //   .../s115121de1/f9d5a6c7a1d93140c11b-600.jpeg -> "f9d5a6c7a1d93140c11b"
+  // (An earlier version also treated "same folder" as a match. Every
+  // radio.co cover shares one folder, so that made it always say 'agree'.)
+  // Any other host keeps its full path. A false 'disagree' is harmless:
+  // it only means that track isn't cached.
+  function artworkId(url) {
+    var clean = (url || '').split('?')[0].split('#')[0].toLowerCase();
+    if (clean.indexOf('media.radio.co/artwork/') !== -1) {
+      var file = clean.split('/').pop();
+      return file.replace(/\.[a-z0-9]+$/, '').replace(/-\d+$/, '');
+    }
+    // Apple covers: host varies (is1..is5-ssl) and the last segment is the
+    // size (e.g. 600x600bb.jpg) — the path in between identifies the image.
+    var m = clean.match(/mzstatic\.com\/(.*)\/[^\/]+$/);
+    if (m) return 'apple:' + m[1];
+    return clean;
   }
   function artworkSourcesRelation(statusUrl, v2Url) {
     if (!statusUrl || !v2Url) return 'unknown';
-    var a = urlPath(statusUrl);
-    var b = urlPath(v2Url);
-    if (a === b) return 'agree';
-    var aParts = a.split('/');
-    var bParts = b.split('/');
-    var aFile = aParts[aParts.length - 1];
-    var bFile = bParts[bParts.length - 1];
-    if (aFile && aFile === bFile) return 'agree';
-    var aDir = aParts.slice(0, -1).join('/');
-    var bDir = bParts.slice(0, -1).join('/');
-    if (aDir && aDir === bDir && aDir.split('/').length > 3) return 'agree';
-    return 'disagree';
+    return artworkId(statusUrl) === artworkId(v2Url) ? 'agree' : 'disagree';
+  }
+
+  // ── ALBUM CHECK + KNOWN-ALBUMS SHEET ──────────────────────
+  // radio.co sometimes reports the NEXT item's album and artwork for the
+  // song that is playing, and /status carries the same wrong data, so the
+  // two radio.co feeds can't check each other. Artist and title ARE right.
+  // iTunes is used only as a CHECKER (is v2's album really an album this
+  // artist + title is on?); a separate Google Sheet, "Known Albums", holds
+  // the albums that passed, with radio.co's own artwork, shared by every
+  // overlay. Two modes (cfg.knownAlbumsMode):
+  //   'learn' (default) — on-air display is unchanged: always exactly what
+  //       v2 reports. In the background each song is checked once and, if
+  //       it passes, added to the sheet; songs that FAIL the check are
+  //       written to the sheet's "Mismatch Log" tab so the check can be
+  //       reviewed before anything relies on it.
+  //   'use' — the sheet is used on air:
+  //       - Manual = 1 row: its Album always shows (artwork from the sheet,
+  //         else v2's)
+  //       - song in the sheet and v2 matches it -> show v2, no lookup
+  //       - otherwise iTunes checks v2's album: good -> show + save;
+  //         wrong -> the sheet's album if any, else hide album/artwork;
+  //         can't tell -> the sheet's album if any; else v2, unless that
+  //         album is in the sheet only for other artists
+  //   Either way, anything shorter than songMinDurationMs (default 60 s:
+  //   station IDs, drops, liners) is not tracked; in 'use' mode it shows
+  //   no album text and the default show artwork.
+  // Sheet columns (first tab): Artist | Song | Album | Duration (seconds,
+  //   filled by the script) | Manual (1 = typed by hand, 0 = filled by the
+  //   script) | Artwork (URL of radio.co's cover). Rows with Manual = 1
+  //   are never overwritten by the script except Duration and Artwork.
+  // Reading: knownAlbumsCsvUrl (the tab published as CSV), re-read every
+  //   knownAlbumsRefreshMs (30 min). Writing: knownAlbumsWriteUrl (Apps
+  //   Script web app) + knownAlbumsWriteToken (must match the script).
+  // Other config: verifyAlbums (default true), songMinDurationMs (60000,
+  //   0 = treat everything as a song), itunesCountry ('US').
+  var KNOWN_MODE            = (cfg.knownAlbumsMode === 'use') ? 'use' : 'learn';
+  var VERIFY_ALBUMS         = (cfg.verifyAlbums === false) ? false : true;
+  var SONG_MIN_DURATION_MS  = (typeof cfg.songMinDurationMs === 'number') ? cfg.songMinDurationMs : 60000;
+  var ITUNES_COUNTRY        = cfg.itunesCountry || 'US';
+  var KNOWN_CSV_URL         = cfg.knownAlbumsCsvUrl   || null;
+  var KNOWN_WRITE_URL       = cfg.knownAlbumsWriteUrl || null;
+  var KNOWN_WRITE_TOKEN     = cfg.knownAlbumsWriteToken || '';
+  var KNOWN_REFRESH_MS      = cfg.knownAlbumsRefreshMs || 30 * 60 * 1000;
+  var knownAlbums           = {};   // keyOf(rawTitle) -> { t: title, a: album, u: art large, s: art standard, m: 1 if manual }
+  var COMPILATION_RE = /(greatest|best of|hits|collection|essential|anthology|ultimate|compilation|playlist|karaoke|tribute|now that)/i;
+
+  // Lowercase, strip accents, drop (parenthetical) / [bracketed] text and
+  // " - single" / " - ep" suffixes, keep letters and digits only.
+  function normName(s) {
+    s = (s || '').toLowerCase();
+    try { s = s.normalize('NFD').replace(/[̀-ͯ]/g, ''); } catch (e) {}
+    return s.replace(/\([^)]*\)|\[[^\]]*\]/g, ' ')
+            .replace(/\s+-\s+(single|ep)\s*$/, ' ')
+            .replace(/&/g, ' and ')
+            .replace(/[^a-z0-9]+/g, ' ')
+            .trim();
+  }
+  // Same name, allowing one to be a longer form of the other.
+  function sameName(a, b) {
+    if (!a || !b) return false;
+    if (a === b) return true;
+    var shorter = a.length <= b.length ? a : b;
+    var longer  = a.length <= b.length ? b : a;
+    if (longer.indexOf(shorter + ' ') === 0) return true;          // "rio" ~ "rio collectors edition"
+    return shorter.length >= 6 && longer.indexOf(shorter) !== -1;
+  }
+
+  // Pure decision step: given the v2 data and the iTunes results, say what
+  // the check found. Returns { verdict: 'verified'|'mismatch'|'unknown',
+  // albums: [up to 5 album names iTunes lists for this song], ... }.
+  function judgeAlbum(t, results) {
+    var artist = normName(t.track_artist), title = normName(t.track_title);
+    var v2Album = normName(t.track_album);
+    var candidates = (results || []).filter(function(r) {
+      return r && r.kind === 'song' && r.collectionName &&
+             sameName(normName(r.artistName), artist) &&
+             sameName(normName(r.trackName),  title);
+    });
+    if (!candidates.length) return { verdict: 'unknown', albums: [] };
+    var albums = [];
+    candidates.forEach(function(r) {
+      if (albums.length < 5 && albums.indexOf(r.collectionName) === -1) albums.push(r.collectionName);
+    });
+    var verified = candidates.some(function(r) {
+      return v2Album && sameName(normName(r.collectionName), v2Album);
+    });
+    if (verified) return { verdict: 'verified', albums: albums };
+    return { verdict: 'mismatch', albums: albums };
+  }
+
+  // Fetch with a timeout; falls back to JSONP (script tag, no CORS needed)
+  // if the browser blocks the fetch. Calls back with an array, or null.
+  function itunesSearch(term, cb) {
+    var url = 'https://itunes.apple.com/search?term=' + encodeURIComponent(term) +
+              '&media=music&entity=song&limit=25&country=' + encodeURIComponent(ITUNES_COUNTRY);
+    var done = false;
+    function finish(results) { if (!done) { done = true; cb(results); } }
+
+    function jsonp() {
+      var name = '__itunesCb' + Date.now() + Math.floor(Math.random() * 1000);
+      var s = document.createElement('script');
+      var ended = false;
+      function end(r) {
+        if (ended) return; ended = true;
+        try { delete window[name]; } catch (e) { window[name] = undefined; }
+        if (s.parentNode) s.parentNode.removeChild(s);
+        finish(r);
+      }
+      window[name] = function(data) { end(data && data.results ? data.results : null); };
+      s.onerror = function() { end(null); };
+      s.src = url + '&callback=' + name;
+      document.head.appendChild(s);
+      setTimeout(function() { end(null); }, 5000);
+    }
+
+    var controller = (typeof AbortController === 'function') ? new AbortController() : null;
+    var timer = setTimeout(function() { if (controller) controller.abort(); }, 5000);
+    fetch(url, controller ? { signal: controller.signal } : undefined)
+      .then(function(res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+      })
+      .then(function(json) { clearTimeout(timer); finish(json && json.results ? json.results : []); })
+      .catch(function() { clearTimeout(timer); jsonp(); });
+  }
+
+  // ── Known-albums sheet ──
+  // Matching key: lowercase letters and digits only, so quotes, punctuation
+  // and accents can't make the sheet's text differ from radio.co's.
+  function keyOf(s) {
+    s = (s || '').toLowerCase();
+    try { s = s.normalize('NFD').replace(/[\u0300-\u036f]/g, ''); } catch (e) {}
+    return s.replace(/[^a-z0-9]+/g, '');
+  }
+  // Sheet columns: Artist, Song, Album, Duration, Manual, Artwork
+  // A song is matched on artist + song (letters and digits only).
+  function songKey(t, rawTitle) {
+    var k = keyOf(t && t.track_artist) + keyOf(t && t.track_title);
+    return k || keyOf(rawTitle);
+  }
+  function loadKnownSheet() {
+    if (!KNOWN_CSV_URL) return Promise.resolve();
+    return fetch(KNOWN_CSV_URL, { cache: 'no-store' })
+      .then(function(res) { if (!res.ok) throw new Error('HTTP ' + res.status); return res.text(); })
+      .then(function(text) {
+        var rows = text.trim().replace(/\r/g, '').split('\n'), n = 0, manual = 0;
+        for (var i = 0; i < rows.length; i++) {
+          var cols = parseCSVRow(rows[i]);
+          var artist = (cols[0] || '').trim(), song = (cols[1] || '').trim();
+          if (!artist || !song || artist.toLowerCase() === 'artist') continue;
+          var m = /^(1|true|yes)$/i.test((cols[4] || '').trim()) ? 1 : 0;
+          knownAlbums[keyOf(artist) + keyOf(song)] = { r: artist, n: song, a: cols[2] || '', u: cols[5] || '', m: m };
+          n++; manual += m;
+        }
+        log('📒 Known-albums sheet loaded: ' + n + ' song(s), ' + manual + ' set by hand', 'log-ok');
+      })
+      .catch(function(err) { log('⚠️ Known-albums sheet failed: ' + err.message, 'log-wait'); });
+  }
+  // Fire-and-forget POST to the Apps Script (it can't be read back).
+  function postToSheet(payload) {
+    if (!KNOWN_WRITE_URL) return;
+    payload.token = KNOWN_WRITE_TOKEN;
+    try {
+      fetch(KNOWN_WRITE_URL, {
+        method: 'POST', mode: 'no-cors',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(payload)
+      }).catch(function(err) { log('⚠️ Could not save to Known Albums sheet: ' + err.message, 'log-wait'); });
+    } catch (e) {}
+  }
+  // A song passed the check: remember it and add/update its sheet row. The
+  // script keeps the Album of a hand-set (Manual = 1) row; only artwork
+  // and duration update.
+  function knownSet(rawTitle, t) {
+    var art = t.artwork_urls || {};
+    var large = art.large || art.standard || '';
+    var k = songKey(t, rawTitle), e = knownAlbums[k];
+    if (e && e.m) { e.u = large || e.u; }
+    else knownAlbums[k] = { r: t.track_artist || '', n: t.track_title || '', a: t.track_album || '', u: large, m: 0 };
+    postToSheet({ type: 'song', artist: t.track_artist || '', song: t.track_title || '', album: t.track_album || '',
+                  art: large,
+                  duration: (typeof t.track_duration === 'number') ? Math.round(t.track_duration / 1000) : '' });
+    log('📒 Saved to Known Albums: ' + rawTitle + ' → "' + (t.track_album || '') + '"' + (e && e.m ? ' (hand-set album kept, artwork updated)' : ''), 'log-ok');
+  }
+  // A song FAILED the check: record it on the sheet's Mismatch Log tab.
+  function postMismatch(rawTitle, t, j) {
+    var art = t.artwork_urls || {};
+    log('🍎 MISMATCH logged: ' + rawTitle + ' — v2 said "' + (t.track_album || '') + '", iTunes lists: ' +
+        ((j && j.albums && j.albums.join(' | ')) || '(none)'), 'log-fail');
+    postToSheet({ type: 'mismatch', artist: t.track_artist || '', song: t.track_title || '',
+                  album: t.track_album || '', art: art.large || art.standard || '',
+                  itunes: (j && j.albums) ? j.albums.join(' | ') : '' });
+  }
+
+  // Copy of the v2 data with a different album/artwork (empty = none shown).
+  function withAlbum(t, album, art, art100) {
+    var fixed = {};
+    for (var k in t) { if (Object.prototype.hasOwnProperty.call(t, k)) fixed[k] = t[k]; }
+    fixed.track_album  = album || '';
+    fixed.artwork_urls = (art || art100) ? { large: art || art100, standard: art100 || art } : {};
+    return fixed;
+  }
+
+  // True when v2's album is in the sheet only for OTHER artists (never this one).
+  function albumBelongsToOtherArtist(t) {
+    var album = t.track_album || '';
+    if (!album || album.toLowerCase() === 'unknown') return false;
+    var albumKey = keyOf(album);
+    var artist = normName(t.track_artist);
+    var seenOther = false;
+    for (var key in knownAlbums) {
+      if (!Object.prototype.hasOwnProperty.call(knownAlbums, key)) continue;
+      var e = knownAlbums[key];
+      if (keyOf(e.a) !== albumKey) continue;
+      if (normName(e.r) === artist) return false;
+      seenOther = true;
+    }
+    return seenOther;
+  }
+
+  // iTunes as a checker. Calls done(verdict, details) with verdict
+  // 'verified' | 'mismatch' | 'unknown' | 'off'.
+  function checkAlbum(t, done) {
+    if (!VERIFY_ALBUMS || !t.track_artist || !t.track_title) { done('off', null); return; }
+    itunesSearch(t.track_artist + ' ' + t.track_title, function(results) {
+      if (results === null) {
+        log('🍎 Album lookup unavailable', 'log-wait');
+        done('unknown', null);
+        return;
+      }
+      var j = judgeAlbum(t, results);
+      if (j.verdict === 'verified') {
+        log('🍎 Album verified: "' + t.track_album + '" is a real album for this song', 'log-ok');
+      } else if (j.verdict === 'unknown') {
+        log('🍎 Album lookup found no match for this song', 'log-wait');
+      } else {
+        log('🍎 ALBUM MISMATCH — v2 said "' + t.track_album + '" but that is not an album for this song', 'log-fail');
+      }
+      done(j.verdict, j);
+    });
+  }
+
+  // Background learning (never changes what is on screen): check the song
+  // once and add it to the sheet if it passes; log it if it fails.
+  function learnAlbum(rawTitle, t) {
+    if (!VERIFY_ALBUMS) return;
+    var dur = (typeof t.track_duration === 'number') ? t.track_duration : null;
+    if (SONG_MIN_DURATION_MS && dur !== null && dur < SONG_MIN_DURATION_MS) return;   // production item
+    var v2Album = t.track_album || '';
+    var v2Art   = (t.artwork_urls && (t.artwork_urls.large || t.artwork_urls.standard)) || '';
+    var entry   = knownAlbums[songKey(t, rawTitle)];
+    // Nothing new to learn if the sheet already has this artwork and either
+    // the same album or a hand-set one.
+    if (entry && artworkId(entry.u) === artworkId(v2Art) && (entry.m || keyOf(entry.a) === keyOf(v2Album))) return;
+    checkAlbum(t, function(verdict, j) {
+      if (verdict === 'verified')      knownSet(rawTitle, t);
+      else if (verdict === 'mismatch') postMismatch(rawTitle, t, j);
+    });
+  }
+
+  // 'use' mode: decides what album/artwork to show. Calls done(dataToShow, verdict).
+  function decideAlbum(rawTitle, t, done) {
+    var dur = (typeof t.track_duration === 'number') ? t.track_duration : null;
+    if (SONG_MIN_DURATION_MS && dur !== null && dur < SONG_MIN_DURATION_MS) {
+      log('🎬 Short item (' + Math.round(dur / 1000) + 's) — no album text, default artwork', 'log-wait');
+      done(withAlbum(t, '', '', ''), 'short');
+      return;
+    }
+    var v2Album = t.track_album || '';
+    var v2Art   = (t.artwork_urls && (t.artwork_urls.large || t.artwork_urls.standard)) || '';
+    var entry   = knownAlbums[songKey(t, rawTitle)];
+
+    if (entry && entry.m) {                   // hand-set album always wins
+      learnAlbum(rawTitle, t);                // keeps the artwork columns fresh
+      done(withAlbum(t, entry.a, entry.u || v2Art, entry.u || v2Art), 'manual');
+      return;
+    }
+    if (entry && keyOf(entry.a) === keyOf(v2Album) && artworkId(entry.u) === artworkId(v2Art)) {
+      done(t, 'known');                       // matches the sheet
+      return;
+    }
+    checkAlbum(t, function(verdict, j) {
+      if (verdict === 'verified') {           // good: show it and save it to the sheet
+        knownSet(rawTitle, t);
+        done(t, 'verified');
+        return;
+      }
+      if (verdict === 'mismatch') postMismatch(rawTitle, t, j);
+      if (entry) {                            // v2 disagrees with the sheet
+        log('📒 v2 said "' + v2Album + '"; using the sheet\'s album "' + entry.a + '"', 'log-fail');
+        done(withAlbum(t, entry.a, entry.u, entry.u), 'known-override');
+        return;
+      }
+      if (verdict === 'mismatch') {
+        log('🛑 Hiding album/artwork (wrong album, nothing in the sheet yet)', 'log-fail');
+        done(withAlbum(t, '', '', ''), 'mismatch');
+        return;
+      }
+      if (albumBelongsToOtherArtist(t)) {     // lookup couldn't judge; second opinion
+        log('🛑 Hiding album/artwork: "' + v2Album + '" is in the sheet only for other artists', 'log-fail');
+        done(withAlbum(t, '', '', ''), 'suspect');
+        return;
+      }
+      done(t, verdict);                       // unknown/off and nothing suspicious: trust v2
+    });
   }
 
   // ── APPLY VERIFIED METADATA ──────────────────────────────
@@ -1034,18 +1354,41 @@
         }
 
         if (fullMatch) {
-          // Clean data — cache it (unless the artwork cross-check says
-          // the album/artwork look suspect) and display
-          if (artRelation !== 'disagree') {
-            cacheSet(expectedRawTitle, {
-              artist:     t.track_artist || '',
-              trackTitle: t.track_title  || '',
-              album:      t.track_album  || '',
-              artworkUrl: v2Art,
-              durationMs: (typeof t.track_duration === 'number') ? t.track_duration : null
+          if (KNOWN_MODE === 'learn') {
+            // Display exactly what v2 reports, as before. The album check
+            // and the Known Albums sheet are filled in the background.
+            if (artRelation !== 'disagree') {
+              cacheSet(expectedRawTitle, {
+                artist:     t.track_artist || '',
+                trackTitle: t.track_title  || '',
+                album:      t.track_album  || '',
+                artworkUrl: v2Art,
+                durationMs: (typeof t.track_duration === 'number') ? t.track_duration : null
+              });
+            }
+            applyMetadata(t);
+            learnAlbum(expectedRawTitle, t);
+          } else {
+            // 'use' mode: decide which album/artwork to show (see ALBUM
+            // CHECK above), then cache what was actually shown.
+            decideAlbum(expectedRawTitle, t, function(shown, verdict) {
+              if (expectedRawTitle !== confirmedTitle) {
+                log('⚠️ Track changed during album check — aborting', 'log-wait');
+                return;
+              }
+              if (verdict !== 'short' && verdict !== 'mismatch' && verdict !== 'suspect') {
+                var shownArt = (shown.artwork_urls && (shown.artwork_urls.large || shown.artwork_urls.standard)) || '';
+                cacheSet(expectedRawTitle, {
+                  artist:     shown.track_artist || '',
+                  trackTitle: shown.track_title  || '',
+                  album:      shown.track_album  || '',
+                  artworkUrl: shownArt,
+                  durationMs: (typeof shown.track_duration === 'number') ? shown.track_duration : null
+                });
+              }
+              applyMetadata(shown);
             });
           }
-          applyMetadata(t);
         } else if (titleMatch && (!artistMatch || !durationOk)) {
           // Title matches but artist or duration signals drift —
           // v2 album/artwork have crept ahead to the next item.
@@ -1162,10 +1505,11 @@
   // ── INIT ─────────────────────────────────────────────────
   function init() {
     grabDom();
-    Promise.all([loadUpcomingAlbums(), loadUpcomingConcerts(), loadShowSchedule()]).then(function() {
+    Promise.all([loadUpcomingAlbums(), loadUpcomingConcerts(), loadShowSchedule(), loadKnownSheet()]).then(function() {
       fillGapIfNeeded();
       fetchNowPlaying();
       setInterval(fetchNowPlaying, POLL_INTERVAL_MS);
+      if (KNOWN_CSV_URL) setInterval(loadKnownSheet, KNOWN_REFRESH_MS);
     });
   }
 
