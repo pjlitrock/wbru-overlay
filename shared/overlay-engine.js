@@ -902,6 +902,8 @@
   //         wrong -> the sheet's album if any, else hide album/artwork;
   //         can't tell -> the sheet's album if any; else v2, unless that
   //         album is in the sheet only for other artists
+  //   Songs that can't be checked are listed, with the reason, on the
+  //   sheet's "Unverified" tab so nothing is skipped silently.
   //   Either way, anything shorter than songMinDurationMs (default 60 s:
   //   station IDs, drops, liners) is not tracked; in 'use' mode it shows
   //   no album text and the default show artwork.
@@ -948,32 +950,39 @@
 
   // Pure decision step: given the v2 data and the iTunes results, say what
   // the check found. Returns { verdict: 'verified'|'mismatch'|'unknown',
-  // albums: [up to 5 album names iTunes lists for this song], ... }.
+  // albums: [up to 5 album names iTunes lists for this song],
+  // n: how many results iTunes returned, top: the first 3 as text }.
   function judgeAlbum(t, results) {
     var artist = normName(t.track_artist), title = normName(t.track_title);
     var v2Album = normName(t.track_album);
+    var out = {
+      n: (results || []).length,
+      top: (results || []).slice(0, 3).map(function(r) {
+        return (r.artistName || '?') + ' - ' + (r.trackName || '?') + ' [' + (r.collectionName || '?') + ']';
+      }).join(' | '),
+      albums: []
+    };
     var candidates = (results || []).filter(function(r) {
       return r && r.kind === 'song' && r.collectionName &&
              sameName(normName(r.artistName), artist) &&
              sameName(normName(r.trackName),  title);
     });
-    if (!candidates.length) return { verdict: 'unknown', albums: [] };
-    var albums = [];
+    if (!candidates.length) { out.verdict = 'unknown'; return out; }
     candidates.forEach(function(r) {
-      if (albums.length < 5 && albums.indexOf(r.collectionName) === -1) albums.push(r.collectionName);
+      if (out.albums.length < 5 && out.albums.indexOf(r.collectionName) === -1) out.albums.push(r.collectionName);
     });
     var verified = candidates.some(function(r) {
       return v2Album && sameName(normName(r.collectionName), v2Album);
     });
-    if (verified) return { verdict: 'verified', albums: albums };
-    return { verdict: 'mismatch', albums: albums };
+    out.verdict = verified ? 'verified' : 'mismatch';
+    return out;
   }
 
   // Fetch with a timeout; falls back to JSONP (script tag, no CORS needed)
   // if the browser blocks the fetch. Calls back with an array, or null.
   function itunesSearch(term, cb) {
     var url = 'https://itunes.apple.com/search?term=' + encodeURIComponent(term) +
-              '&media=music&entity=song&limit=25&country=' + encodeURIComponent(ITUNES_COUNTRY);
+              '&media=music&entity=song&limit=50&country=' + encodeURIComponent(ITUNES_COUNTRY);
     var done = false;
     function finish(results) { if (!done) { done = true; cb(results); } }
 
@@ -1106,7 +1115,7 @@
     itunesSearch(t.track_artist + ' ' + t.track_title, function(results) {
       if (results === null) {
         log('🍎 Album lookup unavailable', 'log-wait');
-        done('unknown', null);
+        done('unknown', { failed: true });
         return;
       }
       var j = judgeAlbum(t, results);
@@ -1119,6 +1128,19 @@
       }
       done(j.verdict, j);
     });
+  }
+
+  // A song was NOT recorded (couldn't be checked): say why on the sheet's
+  // "Unverified" tab. Once per song and reason per page load.
+  var unverifiedSeen = {};
+  function postUnverified(rawTitle, t, reason, detail) {
+    var k = keyOf(rawTitle) + '|' + reason;
+    if (unverifiedSeen[k]) return;
+    unverifiedSeen[k] = true;
+    log('❔ Not recorded: ' + rawTitle + ' — ' + reason + (detail ? ' (' + detail + ')' : ''), 'log-wait');
+    postToSheet({ type: 'unverified', title: rawTitle,
+                  artist: (t && t.track_artist) || '', song: (t && t.track_title) || '',
+                  album: (t && t.track_album) || '', reason: reason, detail: detail || '' });
   }
 
   // Background learning (never changes what is on screen): check the song
@@ -1136,6 +1158,9 @@
     checkAlbum(t, function(verdict, j) {
       if (verdict === 'verified')      knownSet(rawTitle, t);
       else if (verdict === 'mismatch') postMismatch(rawTitle, t, j);
+      else if (verdict === 'unknown')  postUnverified(rawTitle, t,
+        (j && j.failed) ? 'iTunes lookup failed' : 'iTunes returned no matching song',
+        (j && j.failed) ? '' : ('iTunes gave ' + (j ? j.n : 0) + ' result(s)' + ((j && j.top) ? '; top: ' + j.top : '')));
     });
   }
 
@@ -1390,6 +1415,10 @@
             });
           }
         } else if (titleMatch && (!artistMatch || !durationOk)) {
+          if (durationOk) {
+            postUnverified(expectedRawTitle, t, 'radio.co data failed the drift check',
+              'v2 artist "' + v2Artist + '" is not in the title; v2 album "' + ((t && t.track_album) || '') + '"');
+          }
           // Title matches but artist or duration signals drift —
           // v2 album/artwork have crept ahead to the next item.
           // Retrying won't help. Recover using cache or show partial info.
@@ -1410,6 +1439,8 @@
           }, V2_RETRY_DELAY_MS);
         } else {
           log('⚠️ Still mismatched after ' + V2_MATCH_RETRIES + ' attempts — best available (not cached)', 'log-fail');
+          postUnverified(expectedRawTitle, t, 'v2 never matched the status title',
+            'v2 title "' + v2Title + '"');
           applyMetadata(t);
         }
       })
