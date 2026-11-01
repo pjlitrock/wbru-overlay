@@ -1112,13 +1112,11 @@
   // 'verified' | 'mismatch' | 'unknown' | 'off'.
   function checkAlbum(t, done) {
     if (!VERIFY_ALBUMS || !t.track_artist || !t.track_title) { done('off', null); return; }
-    itunesSearch(t.track_artist + ' ' + t.track_title, function(results) {
-      if (results === null) {
-        log('🍎 Album lookup unavailable', 'log-wait');
-        done('unknown', { failed: true });
-        return;
-      }
-      var j = judgeAlbum(t, results);
+    var full  = t.track_artist + ' ' + t.track_title;
+    // Second try: without "(f Q-Tip)", "(Cameron Winter solo)" and the like,
+    // which can throw the iTunes search off the song.
+    var plain = t.track_artist + ' ' + t.track_title.replace(/\([^)]*\)|\[[^\]]*\]/g, ' ').replace(/\s+/g, ' ').trim();
+    function report(j) {
       if (j.verdict === 'verified') {
         log('🍎 Album verified: "' + t.track_album + '" is a real album for this song', 'log-ok');
       } else if (j.verdict === 'unknown') {
@@ -1127,6 +1125,22 @@
         log('🍎 ALBUM MISMATCH — v2 said "' + t.track_album + '" but that is not an album for this song', 'log-fail');
       }
       done(j.verdict, j);
+    }
+    itunesSearch(full, function(results) {
+      if (results === null) {
+        log('🍎 Album lookup unavailable', 'log-wait');
+        done('unknown', { failed: true });
+        return;
+      }
+      var j = judgeAlbum(t, results);
+      if (j.verdict === 'unknown' && plain !== full && plain.length > t.track_artist.length + 1) {
+        itunesSearch(plain, function(results2) {
+          var j2 = results2 ? judgeAlbum(t, results2) : null;
+          report(j2 && j2.verdict !== 'unknown' ? j2 : j);
+        });
+        return;
+      }
+      report(j);
     });
   }
 
@@ -1155,6 +1169,10 @@
     // Nothing new to learn if the sheet already has this artwork and either
     // the same album or a hand-set one.
     if (entry && artworkId(entry.u) === artworkId(v2Art) && (entry.m || keyOf(entry.a) === keyOf(v2Album))) return;
+    // A hand-set row whose album radio.co agrees with: take the artwork and
+    // duration from radio.co without needing iTunes (some songs, e.g. solo
+    // projects filed under a band, can't be matched there).
+    if (entry && entry.m && v2Art && keyOf(entry.a) === keyOf(v2Album)) { knownSet(rawTitle, t); return; }
     checkAlbum(t, function(verdict, j) {
       if (verdict === 'verified')      knownSet(rawTitle, t);
       else if (verdict === 'mismatch') postMismatch(rawTitle, t, j);
