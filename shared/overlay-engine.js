@@ -1073,7 +1073,13 @@
     log('📒 Saved to Known Albums: ' + rawTitle + ' → "' + (t.track_album || '') + '"' + (e && e.m ? ' (hand-set album kept, artwork updated)' : ''), 'log-ok');
   }
   // A song FAILED the check: record it on the sheet's Mismatch Log tab.
+  var mismatchSeen = {};
   function postMismatch(rawTitle, t, j) {
+    var known = knownAlbums[songKey(t, rawTitle)];
+    if (known && known.m) return;                       // hand-set in Known Albums: already dealt with
+    var mk = songKey(t, rawTitle) + '|' + keyOf(t.track_album);
+    if (mismatchSeen[mk]) return;                       // already logged this one since the page loaded
+    mismatchSeen[mk] = true;
     var art = t.artwork_urls || {};
     log('🍎 MISMATCH logged: ' + rawTitle + ' — v2 said "' + (t.track_album || '') + '", iTunes lists: ' +
         ((j && j.albums && j.albums.join(' | ')) || '(none)'), 'log-fail');
@@ -1145,9 +1151,11 @@
   }
 
   // A song was NOT recorded (couldn't be checked): say why on the sheet's
-  // "Unverified" tab. Once per song and reason per page load.
+  // "Unverified" tab. Songs already in Known Albums are skipped. Once per
+  // song and reason per page load.
   var unverifiedSeen = {};
   function postUnverified(rawTitle, t, reason, detail) {
+    if (t && knownAlbums[songKey(t, rawTitle)]) return;   // already in Known Albums: nothing to report
     var k = keyOf(rawTitle) + '|' + reason;
     if (unverifiedSeen[k]) return;
     unverifiedSeen[k] = true;
