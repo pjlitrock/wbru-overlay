@@ -1190,6 +1190,19 @@
     });
   }
 
+  // Artwork for a sheet row that has none: borrow the cover from another row
+  // with the same artist AND album (another song from that album).
+  function borrowArtwork(entry) {
+    var ak = keyOf(entry && entry.a), rk = keyOf(entry && entry.r);
+    if (!ak) return '';
+    for (var key in knownAlbums) {
+      if (!Object.prototype.hasOwnProperty.call(knownAlbums, key)) continue;
+      var e = knownAlbums[key];
+      if (e !== entry && e.u && keyOf(e.a) === ak && keyOf(e.r) === rk) return e.u;
+    }
+    return '';
+  }
+
   // 'use' mode: decides what album/artwork to show. Calls done(dataToShow, verdict).
   function decideAlbum(rawTitle, t, done) {
     var dur = (typeof t.track_duration === 'number') ? t.track_duration : null;
@@ -1204,7 +1217,10 @@
 
     if (entry && entry.m) {                   // hand-set album always wins
       learnAlbum(rawTitle, t);                // keeps the artwork columns fresh
-      done(withAlbum(t, entry.a, entry.u || v2Art, entry.u || v2Art), 'manual');
+      // Artwork: the row's own, else another song from the same album, else
+      // radio.co's cover only if radio.co names the same album, else none.
+      var mArt = entry.u || borrowArtwork(entry) || (keyOf(entry.a) === keyOf(v2Album) ? v2Art : '');
+      done(withAlbum(t, entry.a, mArt, mArt), 'manual');
       return;
     }
     if (entry && keyOf(entry.a) === keyOf(v2Album) && artworkId(entry.u) === artworkId(v2Art)) {
@@ -1220,7 +1236,8 @@
       if (verdict === 'mismatch') postMismatch(rawTitle, t, j);
       if (entry) {                            // v2 disagrees with the sheet
         log('📒 v2 said "' + v2Album + '"; using the sheet\'s album "' + entry.a + '"', 'log-fail');
-        done(withAlbum(t, entry.a, entry.u, entry.u), 'known-override');
+        var oArt = entry.u || borrowArtwork(entry);
+        done(withAlbum(t, entry.a, oArt, oArt), 'known-override');
         return;
       }
       if (verdict === 'mismatch') {
