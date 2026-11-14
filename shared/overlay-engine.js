@@ -115,6 +115,13 @@
   var V2_MATCH_RETRIES  = cfg.v2MatchRetries   || 4;
   var V2_RETRY_DELAY_MS = cfg.v2RetryDelayMs   || 4000;
   var FADE_DURATION_MS  = cfg.fadeDurationMs   || 600;
+  // Display delay (seconds). Holds back what is SHOWN, not what is looked
+  // up: a new song's info appears, and the old song's info goes away, this
+  // many seconds after the data is ready. Use it to bring the overlay in
+  // line with the audio when radio.co's data runs ahead of the stream.
+  // 0 (the default) = no delay, exactly as before.
+  var DISPLAY_DELAY_MS  = (Number(cfg.displayDelaySeconds) > 0) ? Number(cfg.displayDelaySeconds) * 1000 : 0;
+  function later(fn) { if (DISPLAY_DELAY_MS) setTimeout(fn, DISPLAY_DELAY_MS); else fn(); }
   var DEBUG              = !!cfg.debug;
   var DEBUG_TITLE        = cfg.debugTitle || 'OVERLAY — DIAGNOSTIC LOG (newest first)';
 
@@ -699,7 +706,13 @@
     }
   }
 
-  function fadeIn(artist, trackTitle, album, artworkUrl, releaseLabel, concertLabel) {
+  // Every call is held back by the display delay. Timers of equal length
+  // fire in the order they were set, so changes stay in sequence.
+  function fadeIn() {
+    var args = arguments;
+    later(function() { fadeInNow.apply(null, args); });
+  }
+  function fadeInNow(artist, trackTitle, album, artworkUrl, releaseLabel, concertLabel) {
     // Always fade out whatever's currently on screen first (track or show
     // info) so this never looks like an abrupt jump-cut — a no-op wait if
     // nothing is currently visible.
@@ -1551,19 +1564,30 @@
           if (rawTitle !== confirmedTitle) {
             confirmedTitle = rawTitle;
             log('⏳ Confirmed: ' + rawTitle, 'log-wait');
-            fadeOut().then(function() {
-              fillGapIfNeeded(); // show info fills the verification gap, if configured
+            if (DISPLAY_DELAY_MS) {
+              // Look the song up now; only the on-screen change is delayed.
               if (knownBlockTitles[rawTitle]) {
                 log('🧱 Known block file — skipping v2 verification, deferring to show schedule', 'log-wait');
+                later(function() { fadeOut().then(function() { fillGapIfNeeded(); }); });
               } else {
+                later(function() { fadeOut(); });
                 fetchAndVerifyV2(rawTitle, 1);
               }
-            });
+            } else {
+              fadeOut().then(function() {
+                fillGapIfNeeded(); // show info fills the verification gap, if configured
+                if (knownBlockTitles[rawTitle]) {
+                  log('🧱 Known block file — skipping v2 verification, deferring to show schedule', 'log-wait');
+                } else {
+                  fetchAndVerifyV2(rawTitle, 1);
+                }
+              });
+            }
           }
         } else {
           if (rawTitle !== confirmedTitle && isVisible && displayMode === 'track') {
             log('⬇️ New title — fading out stale metadata', 'log-wait');
-            fadeOut();
+            later(function() { fadeOut(); });
           }
           pendingTitle = rawTitle;
           log('⏳ Holding: ' + rawTitle, 'log-wait');
