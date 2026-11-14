@@ -122,6 +122,7 @@
   // 0 (the default) = no delay, exactly as before.
   var DISPLAY_DELAY_MS  = (Number(cfg.displayDelaySeconds) > 0) ? Number(cfg.displayDelaySeconds) * 1000 : 0;
   function later(fn) { if (DISPLAY_DELAY_MS) setTimeout(fn, DISPLAY_DELAY_MS); else fn(); }
+  var staleFadePending = false;
   var DEBUG              = !!cfg.debug;
   var DEBUG_TITLE        = cfg.debugTitle || 'OVERLAY — DIAGNOSTIC LOG (newest first)';
 
@@ -1585,9 +1586,15 @@
             }
           }
         } else {
-          if (rawTitle !== confirmedTitle && isVisible && displayMode === 'track') {
+          if (rawTitle !== confirmedTitle && isVisible && displayMode === 'track' && !staleFadePending) {
             log('⬇️ New title — fading out stale metadata', 'log-wait');
-            later(function() { fadeOut(); });
+            // Fade out and, in the same moment, let the show badge fill the
+            // gap. (Without the delay the poll's closing fillGapIfNeeded()
+            // does this; with it, that call runs before the fade-out.) With a
+            // display delay the old song is still on screen when a second
+            // new title arrives, so only one stale fade-out is scheduled.
+            staleFadePending = true;
+            later(function() { staleFadePending = false; fadeOut(); fillGapIfNeeded(); });
           }
           pendingTitle = rawTitle;
           log('⏳ Holding: ' + rawTitle, 'log-wait');
